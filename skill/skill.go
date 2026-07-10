@@ -20,19 +20,21 @@ type Meta struct {
 	Path        string `json:"path"` // absolute path to the source .md file, for lazy body load
 }
 
-// Dir returns the path to the "skills" directory, checked next to the
-// executable and in the working directory (same convention as cotDir in app.go).
+// Dir returns the path to the "skills" directory under conf/, checked next to
+// the executable and in the working directory (same convention as cotDir/
+// confDir in app.go — duplicated here rather than imported, since main can't
+// be imported by this package without an import cycle).
 func Dir() string {
 	execPath, err := os.Executable()
 	if err == nil {
 		for _, dir := range []string{filepath.Dir(execPath), "."} {
-			p := filepath.Join(dir, "skills")
+			p := filepath.Join(dir, "conf", "skills")
 			if info, statErr := os.Stat(p); statErr == nil && info.IsDir() {
 				return p
 			}
 		}
 	}
-	return "./skills"
+	return "./conf/skills"
 }
 
 // Index parses the frontmatter of every markdown file in the skills directory

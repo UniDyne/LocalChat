@@ -136,19 +136,45 @@ func (a *App) ListModels() ([]string, error) {
 	return names, nil
 }
 
-// cotDir returns the path to the "cot" directory, checked next to the executable
-// and in the working directory (same convention as loadConfig).
-func cotDir() string {
+// confDir returns the path to the "conf" directory (holding SYSTEM.md, cot/,
+// and skills/), checked next to the executable and in the working directory
+// (same convention as loadConfig).
+func confDir() string {
 	execPath, err := os.Executable()
 	if err == nil {
 		for _, dir := range []string{filepath.Dir(execPath), "."} {
-			p := filepath.Join(dir, "cot")
+			p := filepath.Join(dir, "conf")
 			if info, statErr := os.Stat(p); statErr == nil && info.IsDir() {
 				return p
 			}
 		}
 	}
-	return "./cot"
+	return "./conf"
+}
+
+// cotDir returns the path to the "cot" directory under conf/.
+func cotDir() string {
+	return filepath.Join(confDir(), "cot")
+}
+
+// systemPromptPath returns the path to conf/SYSTEM.md.
+func systemPromptPath() string {
+	return filepath.Join(confDir(), "SYSTEM.md")
+}
+
+// loadSystemPrompt reads the configurable system prompt from conf/SYSTEM.md.
+// A missing file is not an error — the system prompt is optional, and the
+// file is re-read on every call (same reasoning as cotPrompt: it may be
+// hand-edited while the app is running).
+func loadSystemPrompt() (string, error) {
+	data, err := os.ReadFile(systemPromptPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read system prompt: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 // ListCotModes returns all registered chain-of-thought modes: the reserved
@@ -240,26 +266,40 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (string, error) {
 	}
 	baseMsgs = append(baseMsgs, api.Message{Role: "user", Content: userMsg})
 
+	systemPrompt, err := loadSystemPrompt()
+	if err != nil {
+		slog.Warn("failed to load system prompt", "error", err)
+	}
+
+	// systemParts collects every piece of system-level context for this turn
+	// (the configurable conf/SYSTEM.md prompt, then the cot hidden-evaluation
+	// note if applicable) into a single system message — most chat templates
+	// expect exactly one system message before history/user, not several, and
+	// a trailing system message after the final user turn confuses the model
+	// into truncating its reply.
+	var systemParts []string
+	if systemPrompt != "" {
+		systemParts = append(systemParts, systemPrompt)
+	}
+
 	msgs := baseMsgs
 	if a.mode != CotModeNone && a.mode != CotModeBuiltIn && a.mode != "" {
 		if prompt, err := cotPrompt(a.mode); err != nil {
 			slog.Warn("failed to load cot prompt", "mode", a.mode, "error", err)
 		} else {
-			evalMsgs := append([]api.Message{{Role: "system", Content: prompt}}, baseMsgs...)
+			evalParts := append(append([]string{}, systemParts...), prompt)
+			evalMsgs := append([]api.Message{{Role: "system", Content: strings.Join(evalParts, "\n\n")}}, baseMsgs...)
 			evaluation, err := a.chatOnce(evalMsgs, api.ThinkValue{Value: false})
 			if err != nil {
 				slog.Warn("cot evaluation failed", "mode", a.mode, "error", err)
 			} else {
-				// Lead with the note, same as the eval pass — most chat templates expect
-				// system before history/user, and a trailing system message after the
-				// final user turn confuses the model into truncating its reply.
-				note := api.Message{
-					Role:    "system",
-					Content: "Internal reasoning notes — do not reveal or repeat verbatim, use only to inform your final answer:\n" + evaluation,
-				}
-				msgs = append([]api.Message{note}, baseMsgs...)
+				systemParts = append(systemParts, "Internal reasoning notes — do not reveal or repeat verbatim, use only to inform your final answer:\n"+evaluation)
 			}
 		}
+	}
+
+	if len(systemParts) > 0 {
+		msgs = append([]api.Message{{Role: "system", Content: strings.Join(systemParts, "\n\n")}}, baseMsgs...)
 	}
 
 	think := api.ThinkValue{Value: a.mode == CotModeBuiltIn}
