@@ -263,7 +263,7 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (string, error) {
 	}
 
 	think := api.ThinkValue{Value: a.mode == CotModeBuiltIn}
-	fullReply, err := a.chatOnce(msgs, think)
+	fullReply, err := a.chatWithTools(msgs, think)
 	if err != nil {
 		return "", fmt.Errorf("chat request failed: %w", err)
 	}
@@ -296,25 +296,80 @@ func titleFromMessage(msg string, maxLen int) string {
 	return strings.TrimSpace(cut) + "…"
 }
 
-// chatOnce issues a single non-streaming chat completion request and returns the full reply text.
+// chatOnce issues a single non-streaming chat completion request (no tools
+// attached) and returns the full reply text. Used for the cot hidden
+// evaluation pass, which is a throwaway internal note that shouldn't be able
+// to trigger skill/artifact tool calls.
 func (a *App) chatOnce(msgs []api.Message, think api.ThinkValue) (string, error) {
+	resp, err := a.chatRequestOnce(msgs, think, nil)
+	return resp.Content, err
+}
+
+// chatRequestOnce issues a single non-streaming chat completion request,
+// optionally with a tool registry attached, and returns the full response
+// message (content plus any requested tool calls).
+func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools api.Tools) (api.Message, error) {
 	stream := false
 	req := &api.ChatRequest{
 		Model:    a.model,
 		Messages: msgs,
 		Stream:   &stream,
 		Think:    &think,
+		Tools:    tools,
 	}
 
-	var fullReply string
+	var full api.Message
 	var mu sync.Mutex
 	err := a.cli.Chat(a.ctx, req, func(resp api.ChatResponse) error {
 		mu.Lock()
 		defer mu.Unlock()
-		fullReply += resp.Message.Content
+		full.Role = resp.Message.Role
+		full.Content += resp.Message.Content
+		if len(resp.Message.ToolCalls) > 0 {
+			full.ToolCalls = append(full.ToolCalls, resp.Message.ToolCalls...)
+		}
 		return nil
 	})
-	return fullReply, err
+	return full, err
+}
+
+// maxToolIterations caps how many rounds of tool calls a single chat turn may
+// make, guarding against a model that keeps calling tools indefinitely.
+const maxToolIterations = 6
+
+// chatWithTools runs the tool-calling loop for a chat turn: send the request
+// with the tool registry attached, execute any requested tool calls, feed
+// their results back as "tool" messages, and repeat until the model responds
+// with no more tool calls (or maxToolIterations is hit). Tool-call turns are
+// intentionally not persisted to the session store — only the final answer
+// returned here is saved by the caller, matching the existing convention of
+// discarding the cot hidden evaluation pass.
+func (a *App) chatWithTools(msgs []api.Message, think api.ThinkValue) (string, error) {
+	tools := toAPITools(a.toolRegistry())
+
+	for i := 0; i < maxToolIterations; i++ {
+		resp, err := a.chatRequestOnce(msgs, think, tools)
+		if err != nil {
+			return "", err
+		}
+		if len(resp.ToolCalls) == 0 {
+			return resp.Content, nil
+		}
+
+		msgs = append(msgs, resp)
+		for _, tc := range resp.ToolCalls {
+			result, herr := a.dispatchTool(tc)
+			if herr != nil {
+				slog.Warn("tool call failed", "tool", tc.Function.Name, "error", herr)
+				result = fmt.Sprintf("error: %v", herr)
+			} else {
+				slog.Info("tool call", "tool", tc.Function.Name)
+			}
+			msgs = append(msgs, api.Message{Role: "tool", Content: result})
+		}
+	}
+
+	return "", fmt.Errorf("tool-calling exceeded %d iterations", maxToolIterations)
 }
 
 // --- Session management (delegated to store.Store) ---

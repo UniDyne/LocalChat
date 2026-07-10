@@ -3,6 +3,7 @@ import './app.css';
 import { sendMessage, setModel, getModel, listModels } from './api';
 import { listCotModes, getCotMode, setCotMode } from './api';
 import { renderSessionList } from './sessions'
+import { renderArtifactList } from './artifacts'
 import { escapeHtml, renderMarkdown } from './content'
 
 
@@ -93,6 +94,8 @@ async function doSend() {
         setStatus('Ready', 'ready');
         // Refresh sidebar so session message counts stay current.
         renderSessionList();
+        // Refresh in case the assistant created any artifacts this turn.
+        renderArtifactList();
     }
 }
 

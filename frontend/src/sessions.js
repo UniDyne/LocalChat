@@ -1,6 +1,7 @@
 import { createSession, loadSessions, getCurrentSession, loadMessages, renameSession, switchSession, deleteSession } from './api';
 import { escapeHtml } from './content'
 import { addMessage, resetMessages } from './app'
+import { renderArtifactList } from './artifacts'
 
 // --- Session Management ---
 let activeSessionId = null;
@@ -88,6 +89,7 @@ async function doSwitchSession(id) {
         activeSessionId = id;
         await loadSessionMessages(id);
         await renderSessionList(); // update highlight
+        await renderArtifactList();
     } catch (err) { console.error('switch session', err); }
 }
 
@@ -104,6 +106,7 @@ async function doDeleteSession(id) {
     resetMessages();
     await renderSessionList();
     await loadSessionMessages(activeSessionId);
+    await renderArtifactList();
 }
 
 // New session button handler (exposed to global for onclick)
@@ -114,6 +117,7 @@ window.doNewSession = async function () {
         chatLog.innerHTML = '';
         resetMessages();
         await renderSessionList();
+        await renderArtifactList();
     } catch (err) { console.error('new session', err); }
 };
 

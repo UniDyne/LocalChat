@@ -26,6 +26,24 @@ type StoredMessage struct {
 	Time    string `json:"time"`
 }
 
+// ArtifactMeta is a lightweight artifact listing (no content) for sidebar display.
+type ArtifactMeta struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	ContentType string `json:"contentType"`
+	CreatedAt   string `json:"createdAt"`
+}
+
+// Artifact is a full artifact record, including content.
+type Artifact struct {
+	ID          string `json:"id"`
+	SessionID   string `json:"sessionId"`
+	Title       string `json:"title"`
+	Content     string `json:"content"`
+	ContentType string `json:"contentType"`
+	CreatedAt   string `json:"createdAt"`
+}
+
 // Store wraps DuckDB-backed session storage and provides thread-safe access.
 type Store struct {
 	db *sql.DB
@@ -70,6 +88,14 @@ CREATE TABLE IF NOT EXISTS messages (
 	content    TEXT NOT NULL,
 	timestamp  TIMESTAMP NOT NULL,
 	PRIMARY KEY (session_id, seq)
+);
+CREATE TABLE IF NOT EXISTS artifacts (
+	id           TEXT PRIMARY KEY,
+	session_id   TEXT NOT NULL,
+	title        TEXT NOT NULL DEFAULT '',
+	content      TEXT NOT NULL,
+	content_type TEXT NOT NULL DEFAULT 'text',
+	created_at   TIMESTAMP NOT NULL
 );`
 
 	if _, err := db.Exec(createSQL); err != nil {
@@ -267,6 +293,61 @@ func (s *Store) RenameSession(id string, title string) error {
 	}
 	_, err := s.db.Exec("UPDATE sessions SET title = ? WHERE id = ?", title, id)
 	return err
+}
+
+// CreateArtifact persists a new artifact for the given session and returns its ID.
+func (s *Store) CreateArtifact(sessionID, title, content, contentType string) (string, error) {
+	if title == "" {
+		title = "Untitled"
+	}
+	if contentType == "" {
+		contentType = "text"
+	}
+	id := uuid.New().String()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(
+		"INSERT INTO artifacts (id, session_id, title, content, content_type, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		id, sessionID, title, content, contentType, now,
+	)
+	if err != nil {
+		return "", fmt.Errorf("insert artifact: %w", err)
+	}
+	return id, nil
+}
+
+// GetArtifactsForSession returns metadata (no content) for all artifacts in a
+// session, ordered newest first.
+func (s *Store) GetArtifactsForSession(sessionID string) ([]ArtifactMeta, error) {
+	rows, err := s.db.Query(
+		"SELECT id, title, content_type, created_at FROM artifacts WHERE session_id = ? ORDER BY created_at DESC",
+		sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query artifacts: %w", err)
+	}
+	defer rows.Close()
+
+	artifacts := make([]ArtifactMeta, 0)
+	for rows.Next() {
+		var m ArtifactMeta
+		if err := rows.Scan(&m.ID, &m.Title, &m.ContentType, &m.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan artifact: %w", err)
+		}
+		artifacts = append(artifacts, m)
+	}
+	return artifacts, nil
+}
+
+// GetArtifact returns the full record (including content) for a single artifact.
+func (s *Store) GetArtifact(id string) (Artifact, error) {
+	var a Artifact
+	err := s.db.QueryRow(
+		"SELECT id, session_id, title, content, content_type, created_at FROM artifacts WHERE id = ?", id,
+	).Scan(&a.ID, &a.SessionID, &a.Title, &a.Content, &a.ContentType, &a.CreatedAt)
+	if err != nil {
+		return Artifact{}, fmt.Errorf("get artifact %s: %w", id, err)
+	}
+	return a, nil
 }
 
 // createSessionInternal inserts a row into the sessions table and returns its ID.

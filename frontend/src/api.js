@@ -1,6 +1,7 @@
 import { ListModels, SendChat, GetModel, SetModel } from '../wailsjs/go/main/App';
 import { ListCotModes, GetCotMode, SetCotMode } from '../wailsjs/go/main/App';
 import { CreateSession, GetCurrentSession, GetSessions, SwitchSession, DeleteSession, RenameSession, GetMessages } from '../wailsjs/go/main/App';
+import { GetArtifacts, GetArtifactContent, CreateArtifactManual } from '../wailsjs/go/main/App';
 
 /**
  * Return an array of available model names from the configured Ollama server.
@@ -117,4 +118,35 @@ export async function saveMessage(sessionId, role, content) {
  */
 export async function loadMessages(sessionId) {
     return await GetMessages(sessionId);
+}
+
+// --- Artifacts ---
+
+/**
+ * Load artifact metadata (no content) for a session, newest first.
+ * @param {string} sessionId
+ * @returns {{id:string,title:string,contentType:string,createdAt:string}[]}
+ */
+export async function getArtifacts(sessionId) {
+    return await GetArtifacts(sessionId);
+}
+
+/**
+ * Fetch the full content of a single artifact by ID.
+ * @param {string} id
+ * @returns {{id:string,sessionId:string,title:string,content:string,contentType:string,createdAt:string}}
+ */
+export async function getArtifactContent(id) {
+    return await GetArtifactContent(id);
+}
+
+/**
+ * Manually create an artifact under the current session (dev/manual affordance;
+ * the model creates artifacts via its own create-artifact tool once wired in).
+ * @param {string} title
+ * @param {string} content
+ * @param {string} contentType
+ */
+export async function createArtifactManual(title, content, contentType) {
+    return await CreateArtifactManual(title, content, contentType);
 }

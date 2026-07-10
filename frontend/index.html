@@ -117,7 +117,7 @@
 
   <!-- Right Sidebar -->
   <aside class="sidebar-right" id="sidebarRight">
-    <div class="right-empty">Right panel<br><br><span style="font-size:10px;color:#666;">Context, files, and notes will appear here</span></div>
+    <div id="artifactList"></div>
   </aside>
 
 </div>
@@ -147,5 +147,6 @@ function switchTab(tab,el){
 document.querySelector('.chat-textarea').addEventListener('input',function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px'});
 </script>
 <script type="module" src="./src/app.js"></script>
+<script type="module" src="./src/artifacts.js"></script>
 </body>
 </html>
