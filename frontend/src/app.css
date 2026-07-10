@@ -1,0 +1,120 @@
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg-primary:#1e1e1e;--bg-secondary:#252526;--bg-tertiary:#2d2d2d;
+    --bg-hover:#2a2d2e;--bg-active:#37373d;
+    --border:#404040;--text-primary:#cccccc;--text-secondary:#969696;
+    --text-muted:#858585;--accent:#7b5ea7;--accent-hover:#9678c6;
+    --status-bg:#1e1e1e;--success:#89d18a;--loading:#dcdcaa;
+    --radius:3px;--font-ui:-apple-system,system-ui,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    --font-mono:ui-monospace,"Cascadia Code","Source Code Pro",Menlo,Consolas,"DejaVu Sans Mono",monospace;
+    --font-md:Garamond, Baskerville, "Baskerville Old Face", "Hoefler Text", "Times New Roman", serif;
+    --font-md-title:Optima, Segoe, "Segoe UI", Candara, Calibri, Arial, sans-serif;
+  }
+  html,body{height:100%;overflow:hidden}
+  body{font-family:var(--font-ui);background:var(--bg-primary);color:var(--text-primary);font-size:12px;line-height:1.4;display:flex;flex-direction:column}
+
+  /* Top Bar */
+  .topbar{display:flex;height:35px;background:var(--bg-secondary);border-bottom:1px solid var(--border);align-items:center;padding:0 8px;gap:6px;flex-shrink:0}
+  .topbar-title{font-size:12px;font-weight:600;color:var(--text-primary)}
+  .topbar-sep{width:1px;height:18px;background:var(--border);margin:0 4px}
+  .topbar-btn{background:none;border:none;color:var(--text-secondary);cursor:pointer;padding:3px 6px;font-size:12px;border-radius:var(--radius)}
+  .topbar-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
+
+  /* Layout */
+  .layout{display:flex;flex:1;overflow:hidden}
+
+  /* Left Sidebar */
+  .sidebar-left{width:0;background:var(--bg-secondary);border-left:1px solid var(--border);transition:width .15s ease;overflow:hidden;flex-shrink:0;flex-direction:column;display:flex;align-items:center;justify-content:center}
+  .sidebar-left.expanded{width:240px;border-left:1px solid var(--border)}
+  .old-sidebar-left{width:240px;background:var(--bg-secondary);border-right:1px solid var(--border);display:flex;flex-direction:column;transition:width .15s ease;overflow:hidden;flex-shrink:0}
+  .old-sidebar-left.collapsed{width:0;border-right:none}
+  .sidebar-tabs{display:flex;height:32px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg-secondary)}
+  .tab-btn{flex:1;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:11px;padding:6px 0;border-bottom:2px solid transparent}
+  .tab-btn:hover{color:var(--text-primary)}
+  .tab-btn.active{color:var(--accent-hover);border-bottom-color:var(--accent)}
+  .sidebar-content{flex:1;overflow-y:auto;display:none;text-align:left;width:100%}
+  .sidebar-content.visible{display:block}
+  .left-empty{color:var(--text-muted);font-size:12px;text-align:center;padding:20px}
+
+  /* File tree */
+  .tree-item{padding:3px 8px 3px 4px;cursor:pointer;color:var(--text-secondary);white-space:nowrap;display:flex;align-items:center;gap:5px}
+  .tree-item:hover{background:var(--bg-hover);color:var(--text-primary)}
+  .tree-item.active{background:var(--bg-active);color:var(--text-primary)}
+  .tree-indent{width:16px;display:inline-block;flex-shrink:0}
+
+  /* Session list */
+  .session-item{position:relative;padding:5px 22px 5px 8px;cursor:pointer;border-bottom:1px solid var(--border)}
+  .session-item:hover{background:var(--bg-hover)}
+  .session-item.active{background:var(--bg-active);color:var(--text-primary)}
+  .session-title{font-size:12px;color:var(--text-primary);margin-bottom:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .session-meta{font-size:10px;color:var(--text-muted)}
+  .session-delete-btn{position:absolute;right:4px;bottom:3px;opacity:0;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;line-height:1;padding:2px;border-radius:var(--radius)}
+  .session-item:hover .session-delete-btn{opacity:1}
+  .session-delete-btn:hover{color:#e06c75}
+
+  /* New session button */
+  .new-session-btn{width:100%;padding:5px;background:none;border:1px solid var(--border);color:var(--accent-hover);cursor:pointer;font-size:12px;border-radius:var(--radius);text-align:left}
+  .new-session-btn:hover{background:var(--bg-hover);border-color:var(--accent)}
+
+  /* Search */
+  .search-input{width:calc(100% - 16px);padding:4px 8px;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);font-size:12px;margin:8px;border-radius:var(--radius)}
+  .search-input::placeholder{color:var(--text-muted)}
+
+  /* Toggle button */
+  .sidebar-toggle{display:flex;align-items:center}
+
+  /* Main Area */
+  .main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+
+  /* Chat log */
+  .chat-log{flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:8px;text-align:left}
+  .message{display:flex;gap:8px;padding:8px;border-radius:var(--radius)}
+  .message:hover{background:rgba(255,255,255,.0125)}
+  .msg-avatar{width:24px;height:24px;border-radius:var(--radius);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600}
+  .msg-user { background: rgba(0,127,0,.125) }
+  .msg-user .msg-avatar{background:#5a6789;color:#fff}
+  .msg-assistant { background: rgba(32,32,32,.125); }
+  .msg-assistant .msg-avatar{background:var(--accent);color:#fff}
+  .msg-body{flex:1;min-width:0}
+  .msg-header{font-size:11px;font-weight:600;margin-bottom:3px;display:flex;align-items:center;gap:6px}
+  .msg-time{color:var(--text-muted);font-weight:400}
+  .msg-text{font-size:12px;line-height:1.5;color:var(--text-primary)}
+  .msg-code{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:6px 8px;font-family:var(--font-mono);font-size:11px;margin-top:4px;overflow-x:auto}
+
+  /* Empty state */
+  .empty-state{flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px}
+
+  /* Bottom Input Area */
+  .input-area{border-top:1px solid var(--border);background:var(--bg-secondary);padding:8px;flex-shrink:0}
+
+  /* Toolbar */
+  .toolbar{display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap}
+  .dropdown-group{position:relative;display:inline-flex;align-items:center;gap:3px}
+  .dd-label{font-size:10px;color:var(--text-muted);margin-right:2px;text-transform:uppercase;letter-spacing:.5px}
+  .dd-btn{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);padding:3px 8px;font-size:11px;border-radius:var(--radius);cursor:pointer;display:flex;align-items:center;gap:4px;appearance:none}
+  .dd-btn:hover{border-color:var(--accent)}
+  .dd-btn .arrow{font-size:9px;color:var(--text-muted)}
+
+  /* Textarea */
+  .input-row{display:flex;align-items:flex-end;gap:6px}
+  .chat-textarea{flex:1;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);padding:6px 8px;font-size:12px;font-family:inherit;border-radius:var(--radius);resize:none;min-height:36px;max-height:150px;line-height:1.4}
+  .chat-textarea:focus{outline:none;border-color:var(--accent)}
+  .send-btn{background:var(--accent);border:none;color:#fff;padding:6px 12px;font-size:11px;border-radius:var(--radius);cursor:pointer;height:36px;white-space:nowrap}
+  .send-btn:hover{background:var(--accent-hover)}
+
+  /* Right Sidebar */
+  .sidebar-right{width:0;background:var(--bg-secondary);border-left:1px solid var(--border);transition:width .15s ease;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+  .sidebar-right.expanded{width:260px;border-left:1px solid var(--border)}
+  .right-empty{color:var(--text-muted);font-size:12px;text-align:center;padding:20px}
+
+  /* Status Bar */
+  .statusbar{display:flex;align-items:center;height:24px;background:var(--accent);padding:0 8px;font-size:11px;color:#fff;flex-shrink:0;gap:12px}
+  .status-left,.status-right{display:flex;align-items:center;gap:8px}
+  .status-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:3px}
+  .status-dot.ready{background:#a6e7a0}
+  .status-dot.loading{background:#ffd166;animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+  /* Scrollbar */
+  ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}

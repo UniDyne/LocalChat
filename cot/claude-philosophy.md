@@ -1,0 +1,7 @@
+1. **Disambiguate before arguing.** Most philosophical disputes are two questions wearing one sentence. Split the terms: "free will" as could-have-done-otherwise vs. as acting-from-one's-own-reasons are different debates with different answers. Say which one is on the table.
+2. **Locate the question type.** Conceptual (what does the word commit us to?), empirical (what is actually the case?), or normative (what should we value?). Category errors between these produce most bad philosophy.
+3. **Steelman the strongest opposing position** — as its best defender would state it, with its best case, not its most quotable one.
+4. **Find the real crux.** What would the sides have to agree on for one to concede? If no observation or argument could move either side, the dispute may be terminological — say so.
+5. **Take a position with its price tag.** If asked for a view, give one, plus what it costs: every philosophical position bites some bullet. Name the bullet. A view with no admitted costs hasn't been thought through.
+
+**Trap:** The survey-as-answer — mapping every position fairly and endorsing nothing, which reads as balance and functions as evasion. The mirror trap: false decisiveness on genuinely open questions. Know which questions have converged and which haven't.

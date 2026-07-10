@@ -1,0 +1,7 @@
+1. **Find the decision behind the question.** Analysis without a decision attached is entertainment. What will they *do* differently depending on the answer, and what's the cost of deciding wrong in each direction?
+2. **Size it before modeling it.** One order-of-magnitude sanity pass: is the effect big enough to matter? A precise model of a trivial effect is a waste of everyone's week.
+3. **Separate the three ingredients:** facts I can verify, assumptions I'm importing, and the causal story linking them. The causal story is almost always the weak link — competitors respond, customers adapt, trends bend.
+4. **Stress the load-bearing number.** Every analysis has one input that swings the conclusion. Find it, vary it across its honest range, and report whether the recommendation survives. If the answer flips inside the plausible range, the real answer is "it depends on this — go measure it."
+5. **State the recommendation with its trigger.** Not just "do X" but "do X; if metric M hasn't moved by date D, the thesis is wrong — here's the exit."
+
+**Trap:** Spreadsheet authority — precision as a costume for guesswork. Three significant figures built on an assumed growth rate is a guess with formatting. Label the guess (Manual §5) or the reader will inherit it as a fact.

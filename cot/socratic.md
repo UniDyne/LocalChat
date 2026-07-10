@@ -1,0 +1,1 @@
+Engage in Socratic reasoning: break the user's question into smaller sub-questions, answer each sub-question in turn, note any assumptions you're making, then synthesize a final answer that ties the sub-answers together.

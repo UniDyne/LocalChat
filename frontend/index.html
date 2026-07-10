@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CoT Chat</title>
+<link rel="stylesheet" href="./src/app.css" type="text/css">
+<link rel="stylesheet" href="./src/markdown.css" type="text/css">
+</head>
+<body>
+
+<!-- Top Bar -->
+<div class="topbar">
+  <button class="topbar-btn" onclick="toggleLeft()" title="Toggle sidebar">&#9776;</button>
+  <span class="topbar-sep"></span>
+  <span class="topbar-title">CoT Chat Demo</span>
+  <div style="flex:1"></div>
+  <button class="topbar-btn" onclick="toggleRight()" title="Toggle right sidebar">&#9776;</button>
+</div>
+
+<div class="layout">
+  <!-- Left Sidebar -->
+  <aside class="sidebar-left" id="sidebarLeft">
+    
+    <div class="sidebar-tabs">
+      <!--button class="tab-btn" onclick="switchTab('files',this)">Files</button-->
+      <button class="tab-btn active" onclick="switchTab('sessions',this)">Sessions</button>
+      <!--button class="tab-btn" onclick="switchTab('search',this)">Search</button-->
+    </div>
+
+    <!--div class="sidebar-content" id="tab-files">
+      <div class="tree-item active"><span>&#128193;</span> chat-notes.md</div>
+      <div class="tree-item"><span class="tree-indent"></span><span class="tree-indent"></span>&#128196; daily-briefing.md</div>
+      <div class="tree-item"><span class="tree-indent"></span><span class="tree-indent"></span>&#128196; code-review.md</div>
+      <div class="tree-item"><span class="tree-indent"></span><span class="tree-indent"></span>&#128196; deployment-plan.md</div>
+      <div class="tree-item"><span>&#128194;</span> projects/</div>
+      <div class="tree-item"><span class="tree-indent"></span><span class="tree-indent"></span>&#128193; hermes-setup.md</div>
+      <div class="tree-item"><span class="tree-indent"></span><span class="tree-indent"></span>&#128193; api-design.md</div>
+      <div class="tree-item"><span>&#128194;</span> archive/</div>
+    </div-->
+
+    <div class="sidebar-content visible" id="tab-sessions">
+      <div style="padding:6px 8px">
+        <button class="new-session-btn" onclick="doNewSession()">&#43; New Chat</button>
+      </div>
+      <div id="sessionList">
+        <div class="session-item"><div class="session-title">API error debugging</div><div class="session-meta">2 min ago &middot; 14 messages</div></div>
+        <div class="session-item"><div class="session-title">Migration strategy review</div><div class="session-meta">1 hour ago &middot; 8 messages</div></div>
+        <div class="session-item"><div class="session-title">Dashboard wireframe ideas</div><div class="session-meta">3 hours ago &middot; 22 messages</div></div>
+        <div class="session-item"><div class="session-title">Docker networking fix</div><div class="session-meta">Yesterday &middot; 5 messages</div></div>
+      </div>
+    </div>
+
+    <!--div class="sidebar-content" id="tab-search">
+      <input type="text" class="search-input" placeholder="Type to search..."><br><br>
+      <div style="padding:4px 8px;color:var(--text-muted);font-size:11px;">Recent results</div>
+      <div class="tree-item">&#9503; auth middleware refactor</div>
+      <div class="tree-item">&#9503; docker-compose networking</div>
+    </div-->
+
+  </aside>
+
+  <!-- Main Chat -->
+  <main class="main">
+    <div class="chat-log" id="chatLog">
+      <div class="message msg-user">
+        <div class="msg-avatar">U</div>
+        <div class="msg-body">
+          <div class="msg-header"><span>You</span><span class="msg-time">14:32</span></div>
+          <div class="msg-text">Can you check why the auth middleware is returning 500 instead of 401 on missing tokens?</div>
+        </div>
+      </div>
+
+      <div class="message msg-assistant">
+        <div class="msg-avatar">A</div>
+        <div class="msg-body">
+          <div class="msg-header"><span>Assistant</span><span class="msg-time">14:32</span></div>
+          <div class="msg-text">Found it. The error handler in <code>src/middleware/auth.ts</code> catches the missing token but re-throws a generic Error instead of returning an HTTP 401:<br><br></div>
+          <div class="msg-code">catch (err) {<br>&nbsp;&nbsp;console.error(err);<br>&nbsp;&nbsp;throw new Error("Auth failed"); // &larr; returns 500<br>}</div>
+          <div class="msg-text" style="margin-top:6px">Should be a proper UnauthorizedResponse. Want me to fix it?</div>
+        </div>
+      </div>
+
+      <div class="message msg-user">
+        <div class="msg-avatar">U</div>
+        <div class="msg-body">
+          <div class="msg-header"><span>You</span><span class="msg-time">14:33</span></div>
+          <div class="msg-text">Yes, please. Also add a unit test.</div>
+        </div>
+      </div>
+
+      <div class="message msg-assistant">
+        <div class="msg-avatar">A</div>
+        <div class="msg-body">
+          <div class="msg-header"><span>Assistant</span><span class="msg-time">14:33</span></div>
+          <div class="msg-text">Done. Patched the catch block to return <code>Status 401</code> and added a test case for missing token in <code>auth.test.ts</code>. Both files compile cleanly.</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Input Area -->
+    <div class="input-area">
+      <div class="toolbar">
+        <span class="dd-label">Model</span>
+        <select class="dd-btn"><option>WorkerQ:latest</option><option>SuperWorkerQ:latest</option></select>
+        <span style="width:8px;display:inline-block"></span>
+        <span class="dd-label">Mode</span>
+        <select class="dd-btn mode-sel"></select>
+      </div>
+      <div class="input-row">
+        <textarea class="chat-textarea" placeholder="Type a message... (Shift+Enter for new line)" rows="1"></textarea>
+        <button class="send-btn">&#9654; Send</button>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Right Sidebar -->
+  <aside class="sidebar-right" id="sidebarRight">
+    <div class="right-empty">Right panel<br><br><span style="font-size:10px;color:#666;">Context, files, and notes will appear here</span></div>
+  </aside>
+
+</div>
+
+<!-- Status Bar -->
+<div class="statusbar">
+  <div class="status-left">
+    <span><span class="status-dot ready"></span>Ready</span>
+  </div>
+  <div class="status-right">
+    <span>WorkerQ:latest</span>
+    <span id="statusMode">&#128337; none</span>
+    <span>v0.9.4</span>
+  </div>
+</div>
+
+<script>
+function toggleLeft(){document.getElementById('sidebarLeft').classList.toggle('expanded')}
+function toggleRight(){document.getElementById('sidebarRight').classList.toggle('expanded')}
+function switchTab(tab,el){
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.sidebar-content').forEach(c=>c.classList.remove('visible'));
+  document.getElementById('tab-'+tab).classList.add('visible');
+}
+// Auto-resize textarea
+document.querySelector('.chat-textarea').addEventListener('input',function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px'});
+</script>
+<script type="module" src="./src/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,175 @@
+/* ── Markdown rendering inside .markdown-body ── */
+
+/* Reset margins so markdown elements don't break the chat flow */
+.markdown-body { padding-left: 2px; font-family:var(--font-md); font-size: 1rem !important; }
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body > :last-child { margin-bottom: 0; }
+
+/* Paragraphs and line breaks */
+.markdown-body p { margin: 6px 0; }
+.markdown-body br + br { display: none; } /* avoid double-spaces from \n<br>\n */
+
+/* Headings */
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  font-size: inherit;
+  font-weight: 600;
+  margin: 10px 0 4px;
+  color: var(--text-primary);
+  font-family:var(--font-md-title);
+}
+.markdown-body h1 { font-size: 2.5em; }
+.markdown-body h2 { font-size: 2em; }
+.markdown-body h3 { font-size: 1.5em; }
+
+/* Inline code */
+.markdown-body :not(pre) > code {
+  /*background: var(--bg-tertiary);
+  border: 1px solid var(--border);*/
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: #756ce0;
+}
+
+/* Fenced code blocks with header bar */
+.markdown-body .code-block {
+  position: relative;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+/* Header bar (label + copy button) */
+.markdown-body .code-block::before {
+  content: none; /* shown only when label/button children exist */
+}
+.markdown-body .code-block > .code-lang-label,
+.markdown-body .code-block > .code-copy-btn {
+  display: inline-flex;
+  height: 24px;
+  align-items: center;
+  font-size: 10px;
+}
+.markdown-body .code-block::before {
+  content: "";
+  display: flex;
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 24px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  z-index: 1;
+}
+
+.markdown-body .code-block > pre {
+  margin: 2.25em 0 0;
+  padding: 0.5em;
+  overflow-x: auto;
+  background: var(--bg-tertiary);
+}
+.markdown-body .code-block > pre code {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* Copy button */
+.markdown-body .code-copy-btn {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  z-index: 2;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 0 6px;
+  font-size: 9px;
+  cursor: pointer;
+  border-radius: 2px;
+  text-transform: uppercase;
+  letter-spacing: .3px;
+}
+.markdown-body .code-copy-btn:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+/* Language label */
+.markdown-body .code-lang-label {
+  position: absolute;
+  top: 2px;
+  left: 8px;
+  z-index: 2;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+/* Blockquote */
+.markdown-body blockquote {
+  margin: 6px 0;
+  padding: 4px 8px;
+  border-left: 3px solid var(--accent);
+  color: var(--text-secondary);
+  background: rgba(123,94,167,.06);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+/* Lists */
+.markdown-body ul,
+.markdown-body ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.markdown-body li {
+  margin: 2px 0;
+}
+
+/* Horizontal rule */
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+
+/* Links */
+.markdown-body a {
+  color: var(--accent-hover);
+  text-decoration: none;
+}
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+
+/* Tables */
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 11px;
+  width: auto;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+.markdown-body th {
+  background: var(--bg-tertiary);
+  font-weight: 600;
+}
+
+/* Bold and italic */
+.markdown-body strong { color: #7bc0e5; }
+.markdown-body em { font-style: italic; }
