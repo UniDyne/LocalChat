@@ -11,19 +11,24 @@ import (
 const maxQueuedTasks = 20
 
 // queueTasksTool lets the model lay out a sequence of follow-up steps for
-// multi-step work that can't be finished in a single reply. Unlike the other
-// tools, its result is not a human-readable confirmation — it's the
-// validated/possibly-truncated JSON task list itself, which the frontend
-// parses directly to drive an automatic one-step-at-a-time continuation loop.
-// No server-side queue state is kept; the frontend is the only conductor.
+// multi-step work that can't be finished in a single reply. Calling it ends
+// the current turn immediately (see chatWithTools in app.go) — the model
+// never sees this result, so it's a plain human-facing confirmation rather
+// than the JSON task list itself. The frontend gets the actual list from the
+// tool call's persisted arguments (ToolArgs), not this result, so this text
+// is free to read as a simple status update instead of looking like a
+// checklist to act on. No server-side queue state is kept; the frontend is
+// the only conductor.
 func (a *App) queueTasksTool() ToolDef {
 	return ToolDef{
 		Name: "queue_tasks",
 		Description: "Queue a sequence of follow-up tasks to work through one at a time, " +
 			"for multi-step work that can't be finished in a single reply. Each item should " +
 			"be a self-contained instruction for that step, written as if the user were asking " +
-			"it. The app automatically runs each queued task in order **after the end of this turn**, feeding " +
-			"you one at a time, until the queue is empty or the user stops it.",
+			"it. This ends your current turn immediately — you will NOT get a chance to act on " +
+			"these tasks yourself right now, so don't try. The app runs each queued task in order " +
+			"on its own, feeding it back to you one at a time as a new turn, until the queue is " +
+			"empty or the user stops it.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -50,16 +55,11 @@ func (a *App) queueTasksTool() ToolDef {
 				tasks = tasks[:maxQueuedTasks]
 			}
 
-			
-			/*
-			echo, err := json.Marshal(tasks)
-			if err != nil {
-				return "", fmt.Errorf("marshal queued tasks: %w", err)
+			noun := "step"
+			if len(tasks) != 1 {
+				noun = "steps"
 			}
-			
-			return string(echo), nil
-			*/
-			return "Tasks queued. Will execute after this turn.", nil
+			return fmt.Sprintf("Queued %d follow-up %s. They'll run automatically, one at a time, after this turn ends — do not attempt them yourself.", len(tasks), noun), nil
 		},
 	}
 }

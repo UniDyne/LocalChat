@@ -280,11 +280,16 @@ async function doSend() {
 }
 
 // --- Self-queued task loop ---
-// The queue_tasks tool (tools_queue.go) is stateless server-side: its result
-// is just the validated task list, echoed back as JSON. All the looping
-// happens here — after any turn resolves, if it included a queue_tasks call,
-// pull the list out and keep auto-sending the next task until it's empty.
+// The queue_tasks tool (tools_queue.go) is stateless server-side and ends the
+// turn immediately once dispatched (see chatWithTools in app.go) — its result
+// is just a human-facing confirmation, not the task list, since that result
+// is also what would otherwise be fed back into the model's own context. The
+// actual list comes from the tool call's own persisted arguments (toolArgs)
+// instead. All the looping happens here — after any turn resolves, if it
+// included a queue_tasks call, pull the list out and keep auto-sending the
+// next task until it's empty.
 const MAX_QUEUE_STEPS_TOTAL = 20; // cross-turn safety cap, independent of the tool's own per-call cap
+const MAX_TASKS_PER_QUEUE_CALL = 20; // mirrors maxQueuedTasks in tools_queue.go
 let taskQueue = [];
 let queueTotal = 0;
 let queueIndex = 0;
@@ -302,9 +307,20 @@ let currentToolName = '';
 function maybeAdvanceTaskQueue(msgs) {
     const call = msgs.find(m => m.role === 'tool' && m.toolName === 'queue_tasks');
     if (call) {
+        // toolArgs is the model's own call arguments (e.g. {"tasks": [...]})
+        // as persisted alongside the call — not toolResult, which is now just
+        // a human-facing confirmation string (see tools_queue.go).
         let newTasks = [];
-        try { newTasks = JSON.parse(call.toolResult) || []; } catch { /* malformed — ignore, nothing to queue */ }
-        if (Array.isArray(newTasks) && newTasks.length > 0) {
+        try {
+            const parsed = JSON.parse(call.toolArgs);
+            newTasks = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
+        } catch { /* malformed — ignore, nothing to queue */ }
+        // Mirror the backend's own validation: trim, drop blanks, cap per call.
+        newTasks = newTasks
+            .filter(t => typeof t === 'string' && t.trim() !== '')
+            .map(t => t.trim())
+            .slice(0, MAX_TASKS_PER_QUEUE_CALL);
+        if (newTasks.length > 0) {
             // A queue_tasks call mid-run just extends the remaining queue —
             // handles the model re-queuing more steps as it goes, for free.
             taskQueue.push(...newTasks);

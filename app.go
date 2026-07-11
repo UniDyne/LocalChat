@@ -312,6 +312,19 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 	// that happened so far in the session.
 	turnMsgs := []ChatTurnMessage{a.persist(sessionID, store.NewMessage{Role: "user", Content: userMsg, Model: a.model, Mode: a.mode, Pinned: true})}
 
+	// Title the session from the user's opening message as soon as it's in,
+	// not after the model replies — a long tool-calling/queued-task chain, or
+	// one that errors out (timeout, exceeding maxToolIterations), would
+	// otherwise leave the session titled "New Chat" indefinitely.
+	if isFirstMessage {
+		title := titleFromMessage(userMsg, 40)
+		if err := a.sess.RenameSession(sessionID, title); err != nil {
+			slog.Warn("failed to auto-title session", "session", sessionID, "error", err)
+		} else {
+			wailsruntime.EventsEmit(a.ctx, "session:renamed", map[string]any{"sessionId": sessionID, "title": title})
+		}
+	}
+
 	msgs := baseMsgs
 	if a.mode != CotModeNone && a.mode != CotModeBuiltIn && a.mode != "" {
 		if prompt, err := cotPrompt(a.mode); err != nil {
@@ -345,13 +358,6 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 		return ChatTurnResult{Messages: turnMsgs}, fmt.Errorf("chat request failed: %w", err)
 	}
 	turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{Role: "assistant", Content: fullReply, Model: a.model, Mode: a.mode, Pinned: true}))
-
-	// Title the session from the user's opening message on their first turn.
-	if isFirstMessage {
-		if err := a.sess.RenameSession(sessionID, titleFromMessage(userMsg, 40)); err != nil {
-			slog.Warn("failed to auto-title session", "session", sessionID, "error", err)
-		}
-	}
 
 	return ChatTurnResult{Messages: turnMsgs}, nil
 }
@@ -409,7 +415,7 @@ func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools ap
 
 // maxToolIterations caps how many rounds of tool calls a single chat turn may
 // make, guarding against a model that keeps calling tools indefinitely.
-const maxToolIterations = 16
+const maxToolIterations = 6
 
 // chatWithTools runs the tool-calling loop for a chat turn: send the request
 // with the tool registry attached, execute any requested tool calls, feed
@@ -419,6 +425,14 @@ const maxToolIterations = 16
 // a ChatTurnMessage so the caller can report it to the frontend — even if the
 // loop later errors out (e.g. the iteration cap is hit), everything dispatched
 // so far is already in the session.
+//
+// queue_tasks is special-cased to end the turn immediately once dispatched,
+// instead of looping back for another model round: its whole point is to
+// hand off remaining work to the frontend's one-at-a-time continuation, and
+// giving the model another generation afterward just invites it to go ahead
+// and attempt those same tasks itself before the turn ends. Ending the turn
+// right there removes that possibility structurally rather than relying on
+// the model to respect the tool description's wording.
 func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.ThinkValue) (string, []ChatTurnMessage, error) {
 	tools := toAPITools(a.toolRegistry())
 	var turnMsgs []ChatTurnMessage
@@ -433,6 +447,7 @@ func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.Thin
 		}
 
 		msgs = append(msgs, resp)
+		queuedReply := ""
 		for _, tc := range resp.ToolCalls {
 			wailsruntime.EventsEmit(a.ctx, "chat:status", map[string]any{"state": "tool", "tool": tc.Function.Name})
 
@@ -442,6 +457,9 @@ func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.Thin
 				result = fmt.Sprintf("error: %v", herr)
 			} else {
 				slog.Info("tool call", "tool", tc.Function.Name)
+				if tc.Function.Name == "queue_tasks" {
+					queuedReply = result
+				}
 			}
 			msgs = append(msgs, api.Message{Role: "tool", Content: result})
 
@@ -453,6 +471,10 @@ func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.Thin
 				Role: "tool", Content: tc.Function.Name, Model: a.model, Mode: a.mode, Pinned: false,
 				ToolName: tc.Function.Name, ToolArgs: string(argsJSON), ToolResult: result,
 			}))
+		}
+
+		if queuedReply != "" {
+			return queuedReply, turnMsgs, nil
 		}
 	}
 
