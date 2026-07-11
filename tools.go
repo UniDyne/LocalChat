@@ -22,6 +22,8 @@ func (a *App) toolRegistry() []ToolDef {
 	return []ToolDef{
 		a.searchSkillsTool(),
 		a.loadSkillTool(),
+		a.createSkillTool(),
+		a.updateSkillTool(),
 		a.createArtifactTool(),
 		a.listArtifactsTool(),
 		a.getArtifactTool(),

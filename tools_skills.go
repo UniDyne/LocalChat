@@ -67,3 +67,69 @@ func (a *App) loadSkillTool() ToolDef {
 		},
 	}
 }
+
+// createSkillTool lets the model persist a brand-new skill: a markdown file
+// documenting its understanding of a system, process, or problem worked out
+// during this conversation, so a future session can find and load it via
+// search_skills/load_skill instead of rediscovering the same ground.
+func (a *App) createSkillTool() ToolDef {
+	return ToolDef{
+		Name: "create_skill",
+		Description: "Create a new persisted skill documenting your understanding of a system, process, or problem, " +
+			"learned from this conversation — so a future session can search_skills/load_skill it instead of " +
+			"rediscovering it. Fails if a skill with this name already exists; use update_skill to revise one.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"name": {"type": "string", "description": "Short, unique skill name (e.g. \"deploy-pipeline\"); used to derive its filename"},
+				"description": {"type": "string", "description": "One-line summary shown in search_skills results"},
+				"body": {"type": "string", "description": "Full skill documentation/instructions, in markdown"}
+			},
+			"required": ["name", "description", "body"]
+		}`),
+		Handler: func(a *App, args map[string]any) (string, error) {
+			name, _ := args["name"].(string)
+			description, _ := args["description"].(string)
+			body, _ := args["body"].(string)
+			if name == "" || description == "" || body == "" {
+				return "", fmt.Errorf("name, description, and body are required")
+			}
+			created, err := skill.Create(name, description, body)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("skill created: %s", created), nil
+		},
+	}
+}
+
+// updateSkillTool lets the model revise an existing skill's documentation
+// (and optionally its description) as its understanding improves.
+func (a *App) updateSkillTool() ToolDef {
+	return ToolDef{
+		Name: "update_skill",
+		Description: "Update an existing skill's body (and optionally its description) by name, as returned by " +
+			"search_skills. Fails if the skill doesn't exist; use create_skill for a new one.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"name": {"type": "string", "description": "The skill's name, exactly as returned by search_skills"},
+				"description": {"type": "string", "description": "New one-line summary; omit or leave empty to keep the existing one"},
+				"body": {"type": "string", "description": "Full replacement markdown body"}
+			},
+			"required": ["name", "body"]
+		}`),
+		Handler: func(a *App, args map[string]any) (string, error) {
+			name, _ := args["name"].(string)
+			description, _ := args["description"].(string)
+			body, _ := args["body"].(string)
+			if name == "" || body == "" {
+				return "", fmt.Errorf("name and body are required")
+			}
+			if err := skill.Update(name, description, body); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("skill updated: %s", name), nil
+		},
+	}
+}

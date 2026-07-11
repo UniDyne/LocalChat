@@ -1,5 +1,5 @@
 import { getArtifacts, getArtifactContent, getCurrentSession } from './api';
-import { escapeHtml, renderMarkdown } from './content';
+import { escapeHtml, renderMarkdown, renderHighlighted } from './content';
 
 // --- Artifact list (right sidebar) ---
 
@@ -63,9 +63,12 @@ async function openArtifactPreview(id) {
     }
 
     const isMarkdown = artifact.contentType === 'markdown';
+    // contentType (python, go, javascript, json, yaml, html, css, sql, text, ...)
+    // is passed straight through as the hljs language name — renderHighlighted
+    // falls back to plain escaped text for "text" or anything unregistered.
     const bodyHtml = isMarkdown
         ? renderMarkdown(artifact.content)
-        : `<pre class="artifact-preview-pre"><code>${escapeHtml(artifact.content)}</code></pre>`;
+        : `<pre class="artifact-preview-pre"><code>${renderHighlighted(artifact.content, artifact.contentType)}</code></pre>`;
 
     const overlay = document.createElement('div');
     overlay.className = 'artifact-preview-overlay';

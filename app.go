@@ -409,7 +409,7 @@ func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools ap
 
 // maxToolIterations caps how many rounds of tool calls a single chat turn may
 // make, guarding against a model that keeps calling tools indefinitely.
-const maxToolIterations = 6
+const maxToolIterations = 16
 
 // chatWithTools runs the tool-calling loop for a chat turn: send the request
 // with the tool registry attached, execute any requested tool calls, feed

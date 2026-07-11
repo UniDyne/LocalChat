@@ -255,6 +255,13 @@ async function sendAndRender(text, { auto = false } = {}) {
         stopTaskQueue(); // a failure mid-run halts the queue rather than silently continuing
     } finally {
         setStatus('Ready', 'ready');
+        // This turn's tool loop (if any) is done — clear it and recompute the
+        // banner. If maybeAdvanceTaskQueue just started a queue step above,
+        // queueRunning is already true again, so the banner stays up with the
+        // queue's own text instead of flickering off.
+        toolLoopActive = false;
+        currentToolName = '';
+        updateQueueBanner();
         // Refresh sidebar so session message counts stay current.
         renderSessionList();
         // Refresh in case the assistant created any artifacts this turn.
@@ -283,6 +290,14 @@ let queueTotal = 0;
 let queueIndex = 0;
 let queueStepsRun = 0;
 let queueRunning = false;
+
+// Separate from the task queue: whether the *current* turn's tool-calling
+// loop (app.go's chatWithTools) is mid-flight. A single turn can dispatch
+// several tool calls in a row before replying, and that should show the same
+// banner/stop affordance as a multi-turn queue — not just silently update the
+// status bar text.
+let toolLoopActive = false;
+let currentToolName = '';
 
 function maybeAdvanceTaskQueue(msgs) {
     const call = msgs.find(m => m.role === 'tool' && m.toolName === 'queue_tasks');
@@ -320,20 +335,29 @@ export function stopTaskQueue() {
     queueRunning = false;
     queueIndex = 0;
     queueTotal = 0;
+    // Stop can't actually cancel an in-flight backend request (no cancellation
+    // channel exists yet) — same limitation the queue itself already has, it
+    // only prevents further auto-continuation. Clearing this at least
+    // dismisses the banner rather than leaving it stuck showing "tool loop"
+    // once the user has asked to stop.
+    toolLoopActive = false;
     updateQueueBanner();
 }
 
 function updateQueueBanner() {
-    // Disabled while a queue runs so a manually-typed message can't interleave
-    // with auto-steps and corrupt turn ordering — stop-then-type, not concurrent.
-    textarea.disabled = queueRunning;
-    sendBtn.disabled = queueRunning;
+    const busy = queueRunning || toolLoopActive;
+    // Disabled while busy so a manually-typed message can't interleave with
+    // auto-steps/tool calls and corrupt turn ordering — stop-then-type, not concurrent.
+    textarea.disabled = busy;
+    sendBtn.disabled = busy;
     if (!queueBanner) return;
-    queueBanner.style.display = queueRunning ? '' : 'none';
-    if (queueRunning) {
-        const label = queueBanner.querySelector('.queue-banner-text');
-        if (label) label.textContent = `Running step ${queueIndex} of ${queueTotal}…`;
-    }
+    queueBanner.style.display = busy ? '' : 'none';
+    if (!busy) return;
+    const label = queueBanner.querySelector('.queue-banner-text');
+    if (!label) return;
+    label.textContent = queueRunning
+        ? `Running step ${queueIndex} of ${queueTotal}…`
+        : `Executing ${currentToolName || 'tool'}…`;
 }
 
 queueStopBtn?.addEventListener('click', stopTaskQueue);
@@ -346,6 +370,9 @@ EventsOn('chat:status', (payload) => {
         setStatus(THINKING_LABELS[Math.floor(Math.random() * THINKING_LABELS.length)], 'loading');
     } else if (payload.state === 'tool') {
         setStatus(`Executing ${payload.tool}…`, 'loading');
+        toolLoopActive = true;
+        currentToolName = payload.tool;
+        updateQueueBanner();
     }
 });
 
