@@ -72,6 +72,87 @@ func Index() ([]Meta, error) {
 	return metas, nil
 }
 
+// Create writes a new skill file under the skills directory, deriving its
+// filename from name. It fails if a skill with this name already exists —
+// callers should use Update to revise an existing one instead of silently
+// overwriting it.
+func Create(name, description, body string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("name is required")
+	}
+	stem := sanitizeName(name)
+	if stem == "" {
+		return "", fmt.Errorf("name %q has no usable characters for a filename", name)
+	}
+
+	dir := Dir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create skills dir: %w", err)
+	}
+
+	path := filepath.Join(dir, stem+".md")
+	if _, err := os.Stat(path); err == nil {
+		return "", fmt.Errorf("skill %q already exists (use update_skill to revise it)", name)
+	}
+
+	if err := writeSkillFile(path, name, description, body); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+// Update overwrites an existing skill's body and, if description is
+// non-empty, its description too (an empty description leaves the existing
+// one as-is). It fails if no skill with this name exists.
+func Update(name, description, body string) error {
+	metas, err := Index()
+	if err != nil {
+		return err
+	}
+	for _, m := range metas {
+		if m.Name != name {
+			continue
+		}
+		if description == "" {
+			description = m.Description
+		}
+		return writeSkillFile(m.Path, name, description, body)
+	}
+	return fmt.Errorf("skill %q not found (use create_skill to add it)", name)
+}
+
+// sanitizeName converts a skill name into a safe filename stem: lowercase
+// alphanumerics separated by single hyphens.
+func sanitizeName(name string) string {
+	var b strings.Builder
+	lastDash := true // suppresses a leading hyphen
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		case !lastDash:
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.TrimRight(b.String(), "-")
+}
+
+// writeSkillFile renders name/description as frontmatter followed by body
+// and writes it to path, overwriting any existing content.
+func writeSkillFile(path, name, description, body string) error {
+	var b strings.Builder
+	b.WriteString("---\n")
+	fmt.Fprintf(&b, "name: %s\n", name)
+	fmt.Fprintf(&b, "description: %s\n", description)
+	b.WriteString("---\n\n")
+	b.WriteString(strings.TrimSpace(body))
+	b.WriteString("\n")
+	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
 // Load returns the full markdown body (frontmatter stripped) for the named skill.
 func Load(name string) (string, error) {
 	metas, err := Index()
