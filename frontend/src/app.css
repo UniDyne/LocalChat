@@ -68,7 +68,7 @@
 
   /* Chat log */
   .chat-log{flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:8px;text-align:left}
-  .message{display:flex;gap:8px;padding:8px;border-radius:var(--radius)}
+  .message{position:relative;display:flex;gap:8px;padding:8px;border-radius:var(--radius);transition:opacity .15s ease}
   .message:hover{background:rgba(255,255,255,.0125)}
   .msg-avatar{width:24px;height:24px;border-radius:var(--radius);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600}
   .msg-user { background: rgba(0,127,0,.125) }
@@ -78,8 +78,22 @@
   .msg-body{flex:1;min-width:0}
   .msg-header{font-size:11px;font-weight:600;margin-bottom:3px;display:flex;align-items:center;gap:6px}
   .msg-time{color:var(--text-muted);font-weight:400}
+  .msg-model-badge{color:var(--text-muted);font-weight:400;font-size:10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:0 4px}
   .msg-text{font-size:12px;line-height:1.5;color:var(--text-primary)}
   .msg-code{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:6px 8px;font-family:var(--font-mono);font-size:11px;margin-top:4px;overflow-x:auto}
+
+  /* Pin/unpin — hover-revealed on every message, dims unpinned ones without hiding them */
+  .msg-pin-btn{position:absolute;top:4px;right:4px;opacity:0;background:none;border:none;cursor:pointer;font-size:11px;line-height:1;padding:2px;border-radius:var(--radius);filter:grayscale(1)}
+  .message:hover .msg-pin-btn{opacity:.85}
+  .msg-pin-btn:hover{opacity:1 !important;filter:none}
+  .message.msg-unpinned{opacity:.55}
+  .message.msg-unpinned .msg-pin-btn{opacity:.85;filter:none}
+
+  /* Collapsed cot/tool step bars */
+  .message.msg-meta{display:block;padding:4px 28px 4px 8px;background:var(--bg-tertiary);border:1px dashed var(--border);cursor:pointer}
+  .message.msg-meta:hover{background:var(--bg-hover)}
+  .msg-meta-summary{font-size:11px;color:var(--text-secondary)}
+  .msg-meta-body{margin-top:6px;font-size:12px;line-height:1.5;color:var(--text-primary);cursor:default}
 
   /* Empty state */
   .empty-state{flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px}
@@ -124,6 +138,13 @@
   .artifact-close-btn:hover{border-color:#e06c75;color:#e06c75}
   .artifact-preview-body{overflow-y:auto;padding:12px;font-size:12px;line-height:1.5;color:var(--text-primary)}
   .artifact-preview-pre{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:8px;font-family:var(--font-mono);font-size:11px;overflow-x:auto;white-space:pre-wrap;word-break:break-word}
+
+  /* Tool-call lightbox — reuses .artifact-preview-* overlay/panel/close-btn, widened + split into two panes */
+  .tool-lightbox-panel{width:min(900px,92vw)}
+  .tool-lightbox-split{display:flex;gap:8px;padding:12px;overflow:auto}
+  .tool-lightbox-pane{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+  .tool-lightbox-pane-label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px}
+  .tool-lightbox-pane .artifact-preview-pre{margin:0}
 
   /* Status Bar */
   .statusbar{display:flex;align-items:center;height:24px;background:var(--accent);padding:0 8px;font-size:11px;color:#fff;flex-shrink:0;gap:12px}

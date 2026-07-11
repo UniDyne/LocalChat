@@ -1,7 +1,7 @@
 /* ── Markdown rendering inside .markdown-body ── */
 
 /* Reset margins so markdown elements don't break the chat flow */
-.markdown-body { padding-left: 2px; font-family:var(--font-md); font-size: 1rem !important; }
+.markdown-body { padding-left: 2px; font-family:var(--font-md); font-size: 1rem !important; text-align:left; }
 .markdown-body > :first-child { margin-top: 0; }
 .markdown-body > :last-child { margin-bottom: 0; }
 

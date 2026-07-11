@@ -1,4 +1,5 @@
 {
-  "ollama_endpoint": "http://localhost:11434",
+  "old_ollama_endpoint": "http://localhost:11434",
+  "ollama_endpoint": "http://172.30.3.116:11434",
   "model": "qwen3.5:9b"
 }

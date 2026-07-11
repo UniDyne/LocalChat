@@ -56,6 +56,20 @@ export function escapeHtml(s) {
     return d.innerHTML;
 }
 
+// Syntax-highlight a raw text blob as a given language, reusing the same
+// hljs instance/registered languages as renderMarkdown's code blocks. Falls
+// back to escaped plain text if highlighting fails or the language isn't
+// registered. Used by the tool-call lightbox (see app.js) for its
+// arguments/result panes.
+export function renderHighlighted(text, lang) {
+    try {
+        if (lang && hljs.getLanguage(lang)) {
+            return hljs.highlight(text, { language: lang }).value;
+        }
+    } catch {}
+    return escapeHtml(text);
+}
+
 // Render markdown with fenced code blocks highlighted by lang.
 export function renderMarkdown(text) {
     // Use marked.parseSync so it returns a string (not void).

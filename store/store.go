@@ -21,9 +21,30 @@ type Session struct {
 
 // StoredMessage is a message retrieved from the database.
 type StoredMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-	Time    string `json:"time"`
+	Seq        int    `json:"seq"`
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	Model      string `json:"model"`
+	Mode       string `json:"mode"`
+	Pinned     bool   `json:"pinned"`
+	ToolName   string `json:"toolName"`
+	ToolArgs   string `json:"toolArgs"`
+	ToolResult string `json:"toolResult"`
+	Time       string `json:"time"`
+}
+
+// NewMessage is the set of fields supplied when persisting one message row.
+// Role is one of "user", "assistant", "cot" (a hidden chain-of-thought
+// evaluation pass), or "tool" (a single tool call/result).
+type NewMessage struct {
+	Role        string
+	Content     string
+	Model       string
+	Mode        string
+	Pinned      bool
+	ToolName    string
+	ToolArgs    string
+	ToolResult  string
 }
 
 // ArtifactMeta is a lightweight artifact listing (no content) for sidebar display.
@@ -84,8 +105,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS messages (
 	session_id TEXT NOT NULL,
 	seq        INTEGER NOT NULL,
+	model      TEXT NOT NULL DEFAULT '',
+	mode       TEXT NOT NULL DEFAULT '',
+	pinned     BOOLEAN NOT NULL DEFAULT true,
 	role       TEXT NOT NULL,
 	content    TEXT NOT NULL,
+	tool_name  TEXT NOT NULL DEFAULT '',
+	tool_args  TEXT NOT NULL DEFAULT '',
+	tool_result TEXT NOT NULL DEFAULT '',
 	timestamp  TIMESTAMP NOT NULL,
 	PRIMARY KEY (session_id, seq)
 );
@@ -216,8 +243,8 @@ func (s *Store) HasMessages(sessionID string) (bool, error) {
 	return exists, nil
 }
 
-// SaveMessage persists a message for the given session.
-func (s *Store) SaveMessage(sessionID string, role, content string) error {
+// SaveMessage persists a message for the given session and returns its seq.
+func (s *Store) SaveMessage(sessionID string, msg NewMessage) (int, error) {
 	s.mu.Lock()
 	var seq int
 	err := s.db.QueryRow(
@@ -225,19 +252,35 @@ func (s *Store) SaveMessage(sessionID string, role, content string) error {
 	).Scan(&seq)
 	if err != nil {
 		s.mu.Unlock()
-		return fmt.Errorf("get seq: %w", err)
+		return 0, fmt.Errorf("get seq: %w", err)
 	}
 	s.mu.Unlock()
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.Exec(
-		"INSERT INTO messages (session_id, seq, role, content, timestamp) VALUES (?, ?, ?, ?, ?)",
-		sessionID, seq, role, content, now,
+		`INSERT INTO messages (session_id, seq, role, content, model, mode, pinned, tool_name, tool_args, tool_result, timestamp)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, seq, msg.Role, msg.Content, msg.Model, msg.Mode, msg.Pinned, msg.ToolName, msg.ToolArgs, msg.ToolResult, now,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert message: %w", err)
+	}
+	return seq, nil
+}
+
+// SetMessagePinned toggles whether a message is included in the context sent
+// to the model on future turns. The message row itself is never deleted.
+func (s *Store) SetMessagePinned(sessionID string, seq int, pinned bool) error {
+	_, err := s.db.Exec(
+		"UPDATE messages SET pinned = ? WHERE session_id = ? AND seq = ?",
+		pinned, sessionID, seq,
 	)
 	return err
 }
 
-// GetSessions returns all sessions ordered newest first.
+// GetSessions returns all sessions ordered newest first. The message count
+// only counts user/assistant turns — internal cot/tool rows are excluded so
+// the count reflects actual conversation length, not bookkeeping detail.
 func (s *Store) GetSessions() ([]Session, error) {
 	rows, err := s.db.Query(`
 SELECT s.id, COALESCE(s.title,''), s.created_at, COALESCE(mm.msg_count,0) AS msg_count
@@ -245,6 +288,7 @@ FROM sessions s
 LEFT JOIN (
 	SELECT session_id, COUNT(m.session_id) AS msg_count, MAX(m.timestamp) AS timestamp
 	FROM messages m
+	WHERE m.role IN ('user', 'assistant')
 	GROUP BY m.session_id
 ) AS mm ON mm.session_id = s.id
 ORDER BY COALESCE(mm.timestamp, s.created_at) DESC`)
@@ -267,7 +311,8 @@ ORDER BY COALESCE(mm.timestamp, s.created_at) DESC`)
 // GetMessages returns all messages for a given session in order.
 func (s *Store) GetMessages(sessionID string) ([]StoredMessage, error) {
 	rows, err := s.db.Query(
-		"SELECT role, content, timestamp FROM messages WHERE session_id = ? ORDER BY seq",
+		`SELECT seq, role, content, model, mode, pinned, tool_name, tool_args, tool_result, timestamp
+		 FROM messages WHERE session_id = ? ORDER BY seq`,
 		sessionID,
 	)
 	if err != nil {
@@ -278,7 +323,7 @@ func (s *Store) GetMessages(sessionID string) ([]StoredMessage, error) {
 	msgs := make([]StoredMessage, 0)
 	for rows.Next() {
 		var m StoredMessage
-		if err := rows.Scan(&m.Role, &m.Content, &m.Time); err != nil {
+		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &m.Model, &m.Mode, &m.Pinned, &m.ToolName, &m.ToolArgs, &m.ToolResult, &m.Time); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		msgs = append(msgs, m)

@@ -76,7 +76,14 @@ async function loadSessionMessages(sessionId) {
     try {
         const msgs = await loadMessages(sessionId);
         for (const m of msgs) {
-            addMessage(m.role, escapeHtml(m.content));
+            // Pre-escaping before addMessage's markdown rendering is a
+            // pre-existing quirk carried over unchanged from before this
+            // reload path gained model/mode/pinned/tool fields.
+            addMessage({
+                seq: m.seq, role: m.role, content: escapeHtml(m.content),
+                model: m.model, mode: m.mode, pinned: m.pinned,
+                toolName: m.toolName, toolArgs: m.toolArgs, toolResult: m.toolResult,
+            });
         }
     } catch (err) { console.error('loadSessionMessages', err); }
 }

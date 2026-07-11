@@ -14,6 +14,64 @@ export namespace main {
 	        this.content = source["content"];
 	    }
 	}
+	export class ChatTurnMessage {
+	    seq: number;
+	    role: string;
+	    content: string;
+	    model: string;
+	    mode: string;
+	    pinned: boolean;
+	    toolName?: string;
+	    toolArgs?: string;
+	    toolResult?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatTurnMessage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.seq = source["seq"];
+	        this.role = source["role"];
+	        this.content = source["content"];
+	        this.model = source["model"];
+	        this.mode = source["mode"];
+	        this.pinned = source["pinned"];
+	        this.toolName = source["toolName"];
+	        this.toolArgs = source["toolArgs"];
+	        this.toolResult = source["toolResult"];
+	    }
+	}
+	export class ChatTurnResult {
+	    messages: ChatTurnMessage[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatTurnResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.messages = this.convertValues(source["messages"], ChatTurnMessage);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 
@@ -99,8 +157,15 @@ export namespace store {
 	    }
 	}
 	export class StoredMessage {
+	    seq: number;
 	    role: string;
 	    content: string;
+	    model: string;
+	    mode: string;
+	    pinned: boolean;
+	    toolName: string;
+	    toolArgs: string;
+	    toolResult: string;
 	    time: string;
 	
 	    static createFrom(source: any = {}) {
@@ -109,8 +174,15 @@ export namespace store {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.seq = source["seq"];
 	        this.role = source["role"];
 	        this.content = source["content"];
+	        this.model = source["model"];
+	        this.mode = source["mode"];
+	        this.pinned = source["pinned"];
+	        this.toolName = source["toolName"];
+	        this.toolArgs = source["toolArgs"];
+	        this.toolResult = source["toolResult"];
 	        this.time = source["time"];
 	    }
 	}

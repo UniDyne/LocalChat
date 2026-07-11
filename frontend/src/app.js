@@ -1,15 +1,19 @@
 import './style.css';
 import './app.css';
-import { sendMessage, setModel, getModel, listModels } from './api';
+import { sendMessage, setModel, getModel, listModels, getCurrentSession, setMessagePinned } from './api';
 import { listCotModes, getCotMode, setCotMode } from './api';
 import { renderSessionList } from './sessions'
 import { renderArtifactList } from './artifacts'
-import { escapeHtml, renderMarkdown } from './content'
+import { escapeHtml, renderMarkdown, renderHighlighted } from './content'
+import { EventsOn } from '../wailsjs/runtime/runtime'
 
 
 
 // --- State ---
-let history = []; // array of {role, content} for Ollama context
+// timeline holds every rendered message record, in order: {seq, role, content,
+// model, mode, pinned, toolName, toolArgs, toolResult, el}. seq is null until
+// the backend round-trip returns the persisted row (see doSend).
+let timeline = [];
 let currentModel = '';
 
 // --- DOM refs ---
@@ -29,29 +33,131 @@ function getTimestamp() {
 }
 
 export function resetMessages() {
-    history = [];
+    timeline = [];
 }
 
-export function addMessage(role, content) {
-    history.push({role, content});
+// Messages sent to the backend as context on the next turn: pinned
+// user/assistant turns only. Derived fresh from `timeline` each time rather
+// than maintained incrementally, so pin/unpin toggles can't drift out of
+// sync with what's actually rendered.
+export function computeHistory() {
+    return timeline
+        .filter(m => m.pinned && (m.role === 'user' || m.role === 'assistant'))
+        .map(m => ({ role: m.role, content: m.content }));
+}
 
-    //let html = escapeHtml(content);
+function pinButtonHtml(pinned) {
+    return `<button class="msg-pin-btn" title="${pinned ? 'Unpin (exclude from context)' : 'Pin (include in context)'}">${pinned ? '📌' : '📍'}</button>`;
+}
+
+// Wires a message's pin button: toggles pinned state via the backend and
+// updates the icon/dimming in place, without removing the message.
+function wirePinButton(div, rec) {
+    const btn = div.querySelector('.msg-pin-btn');
+    if (!btn) return;
+    btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (rec.seq === null) return; // not yet persisted — brief window for the optimistic user bubble
+        const next = !rec.pinned;
+        try {
+            const sessionId = await getCurrentSession();
+            await setMessagePinned(sessionId, rec.seq, next);
+            rec.pinned = next;
+            btn.textContent = rec.pinned ? '📌' : '📍';
+            btn.title = rec.pinned ? 'Unpin (exclude from context)' : 'Pin (include in context)';
+            div.classList.toggle('msg-unpinned', !rec.pinned);
+        } catch (err) { console.error('pin toggle failed', err); }
+    });
+}
+
+// Opens a split-pane lightbox showing a tool call's arguments and result,
+// pretty-printed and syntax-highlighted where they parse as JSON.
+function openToolLightbox(rec) {
+    let argsPretty = rec.toolArgs || '';
+    try { argsPretty = JSON.stringify(JSON.parse(rec.toolArgs), null, 2); } catch {}
+
+    let resultPretty = rec.toolResult || '';
+    let resultLang = 'plaintext';
+    try { resultPretty = JSON.stringify(JSON.parse(rec.toolResult), null, 2); resultLang = 'json'; } catch {}
+
+    const overlay = document.createElement('div');
+    overlay.className = 'artifact-preview-overlay';
+    overlay.innerHTML = `
+        <div class="artifact-preview-panel tool-lightbox-panel">
+            <div class="artifact-preview-header">
+                <span class="artifact-preview-title">🔧 ${escapeHtml(rec.toolName || 'tool')}</span>
+                <div><button class="artifact-close-btn">&times;</button></div>
+            </div>
+            <div class="tool-lightbox-split">
+                <div class="tool-lightbox-pane">
+                    <div class="tool-lightbox-pane-label">Arguments</div>
+                    <pre class="artifact-preview-pre"><code>${renderHighlighted(argsPretty, 'json')}</code></pre>
+                </div>
+                <div class="tool-lightbox-pane">
+                    <div class="tool-lightbox-pane-label">Result</div>
+                    <pre class="artifact-preview-pre"><code>${renderHighlighted(resultPretty, resultLang)}</code></pre>
+                </div>
+            </div>
+        </div>`;
+    overlay.querySelector('.artifact-close-btn').addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+}
+
+// Adds one message to the chat log and the in-memory timeline, and returns
+// its record (so callers can reconcile it later, e.g. once a seq is known).
+// entry: {seq=null, role, content, model='', mode='', pinned=true, toolName='', toolArgs='', toolResult=''}
+export function addMessage(entry) {
+    const rec = { seq: null, model: '', mode: '', pinned: true, toolName: '', toolArgs: '', toolResult: '', ...entry };
+    timeline.push(rec);
 
     const chatLog = document.getElementById('chatLog');
-    if (!chatLog) return;
+    if (!chatLog) return rec;
 
-    const md = renderMarkdown(content);
+    const div = document.createElement('div');
+    rec.el = div;
 
-    const div  = document.createElement('div');
-    div.className = `message msg-${role}`;
-    div.innerHTML = `
-        <div class="msg-avatar">${role === 'user' ? 'U' : 'A'}</div>
-        <div class="msg-body">
-            <div class="msg-header"><span>${role === 'user' ? 'You' : 'Assistant'}</span><span class="msg-time">${getTimestamp()}</span></div>
-            <div class="msg-text markdown-body">${md}</div>
-        </div>`;
+    if (rec.role === 'cot' || rec.role === 'tool') {
+        // Collapsed bar for internal steps — chain-of-thought notes and tool
+        // calls are unpinned by default (excluded from future context) but
+        // stay visible and expandable.
+        div.className = `message msg-meta msg-${rec.role}${rec.pinned ? '' : ' msg-unpinned'}`;
+        const label = rec.role === 'cot' ? 'Chain of thought' : `🔧 ${escapeHtml(rec.toolName || 'tool')}`;
+        div.innerHTML = `
+            ${pinButtonHtml(rec.pinned)}
+            <div class="msg-meta-summary">${label}</div>
+            <div class="msg-meta-body" style="display:none"></div>`;
+        const summary = div.querySelector('.msg-meta-summary');
+        const body = div.querySelector('.msg-meta-body');
+        summary.addEventListener('click', () => {
+            if (rec.role === 'tool') { openToolLightbox(rec); return; }
+            const isOpen = body.style.display !== 'none';
+            if (isOpen) { body.style.display = 'none'; return; }
+            body.innerHTML = `<div class="markdown-body">${renderMarkdown(rec.content)}</div>`;
+            body.style.display = '';
+        });
+        wirePinButton(div, rec);
+    } else {
+        div.className = `message msg-${rec.role}${rec.pinned ? '' : ' msg-unpinned'}`;
+        const md = renderMarkdown(rec.content);
+        const metaBits = [rec.model, (rec.mode && rec.mode !== 'none') ? rec.mode : ''].filter(Boolean).join(' · ');
+        div.innerHTML = `
+            ${pinButtonHtml(rec.pinned)}
+            <div class="msg-avatar">${rec.role === 'user' ? 'U' : 'A'}</div>
+            <div class="msg-body">
+                <div class="msg-header">
+                    <span>${rec.role === 'user' ? 'You' : 'Assistant'}</span>
+                    <span class="msg-time">${getTimestamp()}</span>
+                    ${metaBits ? `<span class="msg-model-badge">${escapeHtml(metaBits)}</span>` : ''}
+                </div>
+                <div class="msg-text markdown-body">${md}</div>
+            </div>`;
+        wirePinButton(div, rec);
+    }
+
     chatLog.appendChild(div);
     chatLog.scrollTop = chatLog.scrollHeight;
+    return rec;
 }
 
 function setStatus(text, state) {
@@ -69,10 +175,12 @@ async function doSend() {
     const text = textarea.value.trim();
     if (!text) return;
 
-    // Snapshot prior turns before addMessage appends this one — the backend
+    // Snapshot context before rendering this turn's user bubble — the backend
     // appends `text` itself as the final turn, so history must not include it.
-    const priorHistory = [...history];
-    addMessage('user', text);
+    const priorHistory = computeHistory();
+    // Render optimistically for instant feedback; reconciled with its real
+    // seq/model/mode once the round-trip below returns.
+    const pendingUser = addMessage({ role: 'user', content: text, pinned: true });
 
     textarea.value     = '';
     textarea.style.height = 'auto';
@@ -80,16 +188,28 @@ async function doSend() {
     setStatus('Sending…', 'loading');
 
     try {
-        const reply = await sendMessage(text, priorHistory);
-        if (reply) {
-            addMessage('assistant', reply);
-        } else {
+        const result = await sendMessage(text, priorHistory);
+        const msgs = result?.messages || [];
+
+        const userTurn = msgs.find(m => m.role === 'user');
+        if (userTurn) {
+            pendingUser.seq = userTurn.seq;
+            pendingUser.model = userTurn.model;
+            pendingUser.mode = userTurn.mode;
+        }
+
+        for (const m of msgs) {
+            if (m.role === 'user') continue; // already rendered optimistically above
+            addMessage(m);
+        }
+
+        if (!msgs.some(m => m.role === 'assistant')) {
             // Ollama may return empty for certain models — just note it.
             setStatus('Ready', 'ready');
         }
     } catch (err) {
         console.error(err);
-        addMessage('assistant', `<em style="color:var(--text-muted)">Error: ${escapeHtml(String(err))}</em>`);
+        addMessage({ role: 'assistant', content: `<em style="color:var(--text-muted)">Error: ${escapeHtml(String(err))}</em>`, pinned: false });
     } finally {
         setStatus('Ready', 'ready');
         // Refresh sidebar so session message counts stay current.
@@ -98,6 +218,17 @@ async function doSend() {
         renderArtifactList();
     }
 }
+
+// --- Live status from the backend (chain-of-thought / tool execution) ---
+const THINKING_LABELS = ['Thinking…', 'Cogitating…', 'Pondering…'];
+EventsOn('chat:status', (payload) => {
+    if (!payload) return;
+    if (payload.state === 'thinking') {
+        setStatus(THINKING_LABELS[Math.floor(Math.random() * THINKING_LABELS.length)], 'loading');
+    } else if (payload.state === 'tool') {
+        setStatus(`Executing ${payload.tool}…`, 'loading');
+    }
+});
 
 
 // Event delegation: copy buttons are created inside renderMarkdown via innerHTML,

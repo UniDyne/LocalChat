@@ -15,6 +15,7 @@ import (
 
 	_ "github.com/marcboeker/go-duckdb"
 	"github.com/ollama/ollama/api"
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"simple-cot-chat/store"
 )
 
@@ -237,17 +238,39 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
-// SendChat sends the user message to Ollama with optional history and returns the assistant reply.
-// Both the user message and the assistant reply are persisted to the current session in DuckDB.
+// ChatTurnMessage is one message persisted during a single SendChat call,
+// returned to the frontend so it can render (and let the user pin/unpin) it
+// without a session reload.
+type ChatTurnMessage struct {
+	Seq        int    `json:"seq"`
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	Model      string `json:"model"`
+	Mode       string `json:"mode"`
+	Pinned     bool   `json:"pinned"`
+	ToolName   string `json:"toolName,omitempty"`
+	ToolArgs   string `json:"toolArgs,omitempty"`
+	ToolResult string `json:"toolResult,omitempty"`
+}
+
+// ChatTurnResult is everything SendChat persisted for one turn, in
+// conversation order (user, optional cot note, optional tool calls, assistant).
+type ChatTurnResult struct {
+	Messages []ChatTurnMessage `json:"messages"`
+}
+
+// SendChat sends the user message to Ollama with optional history and returns
+// every message persisted this turn (user, optional cot note, optional tool
+// calls, assistant).
 //
 // For a custom (file-based) cot mode, this runs two model calls: a hidden evaluation
 // pass using the cot prompt as a system message, then a final answer pass that folds
-// the evaluation back in as a hidden note. Only the final answer is shown to the user
-// or persisted — the cot prompt and the evaluation are discarded once the request
-// completes, so the visible conversation and its context stay small.
-func (a *App) SendChat(userMsg string, history []ChatMessage) (string, error) {
+// the evaluation back in as a hidden note. The cot note and any tool calls are
+// persisted as their own unpinned message rows (visible collapsed in the UI, but
+// excluded from context on future turns unless the user pins them).
+func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, error) {
 	if a.cli == nil {
-		return "", fmt.Errorf("Ollama client not initialized")
+		return ChatTurnResult{}, fmt.Errorf("Ollama client not initialized")
 	}
 
 	sessionID := a.sess.CurrentSession()
@@ -282,6 +305,11 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (string, error) {
 		systemParts = append(systemParts, systemPrompt)
 	}
 
+	// pending collects every message row this turn will persist, in
+	// conversation order — saved to the store only once the whole turn
+	// succeeds, matching the existing all-or-nothing persistence behavior.
+	pending := []store.NewMessage{{Role: "user", Content: userMsg, Model: a.model, Mode: a.mode, Pinned: true}}
+
 	msgs := baseMsgs
 	if a.mode != CotModeNone && a.mode != CotModeBuiltIn && a.mode != "" {
 		if prompt, err := cotPrompt(a.mode); err != nil {
@@ -289,11 +317,14 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (string, error) {
 		} else {
 			evalParts := append(append([]string{}, systemParts...), prompt)
 			evalMsgs := append([]api.Message{{Role: "system", Content: strings.Join(evalParts, "\n\n")}}, baseMsgs...)
+
+			wailsruntime.EventsEmit(a.ctx, "chat:status", map[string]any{"state": "thinking"})
 			evaluation, err := a.chatOnce(evalMsgs, api.ThinkValue{Value: false})
 			if err != nil {
 				slog.Warn("cot evaluation failed", "mode", a.mode, "error", err)
 			} else {
 				systemParts = append(systemParts, "Internal reasoning notes — do not reveal or repeat verbatim, use only to inform your final answer:\n"+evaluation)
+				pending = append(pending, store.NewMessage{Role: "cot", Content: evaluation, Model: a.model, Mode: a.mode, Pinned: false})
 			}
 		}
 	}
@@ -303,14 +334,25 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (string, error) {
 	}
 
 	think := api.ThinkValue{Value: a.mode == CotModeBuiltIn}
-	fullReply, err := a.chatWithTools(msgs, think)
+	fullReply, toolPending, err := a.chatWithTools(msgs, think)
 	if err != nil {
-		return "", fmt.Errorf("chat request failed: %w", err)
+		return ChatTurnResult{}, fmt.Errorf("chat request failed: %w", err)
 	}
+	pending = append(pending, toolPending...)
+	pending = append(pending, store.NewMessage{Role: "assistant", Content: fullReply, Model: a.model, Mode: a.mode, Pinned: true})
 
-	// Persist only the user message and the final answer — the cot evaluation pass, if any, is discarded.
-	_ = a.sess.SaveMessage(sessionID, "user", userMsg)
-	_ = a.sess.SaveMessage(sessionID, "assistant", fullReply)
+	turnMsgs := make([]ChatTurnMessage, 0, len(pending))
+	for _, p := range pending {
+		seq, err := a.sess.SaveMessage(sessionID, p)
+		if err != nil {
+			slog.Warn("failed to persist message", "role", p.Role, "session", sessionID, "error", err)
+			continue
+		}
+		turnMsgs = append(turnMsgs, ChatTurnMessage{
+			Seq: seq, Role: p.Role, Content: p.Content, Model: p.Model, Mode: p.Mode, Pinned: p.Pinned,
+			ToolName: p.ToolName, ToolArgs: p.ToolArgs, ToolResult: p.ToolResult,
+		})
+	}
 
 	// Title the session from the user's opening message on their first turn.
 	if isFirstMessage {
@@ -319,7 +361,7 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (string, error) {
 		}
 	}
 
-	return fullReply, nil
+	return ChatTurnResult{Messages: turnMsgs}, nil
 }
 
 // titleFromMessage derives a short session title by collapsing a message to a single
@@ -380,24 +422,26 @@ const maxToolIterations = 6
 // chatWithTools runs the tool-calling loop for a chat turn: send the request
 // with the tool registry attached, execute any requested tool calls, feed
 // their results back as "tool" messages, and repeat until the model responds
-// with no more tool calls (or maxToolIterations is hit). Tool-call turns are
-// intentionally not persisted to the session store — only the final answer
-// returned here is saved by the caller, matching the existing convention of
-// discarding the cot hidden evaluation pass.
-func (a *App) chatWithTools(msgs []api.Message, think api.ThinkValue) (string, error) {
+// with no more tool calls (or maxToolIterations is hit). Each dispatched tool
+// call is also returned as a store.NewMessage (role "tool", unpinned) for the
+// caller to persist alongside the rest of the turn.
+func (a *App) chatWithTools(msgs []api.Message, think api.ThinkValue) (string, []store.NewMessage, error) {
 	tools := toAPITools(a.toolRegistry())
+	var toolMsgs []store.NewMessage
 
 	for i := 0; i < maxToolIterations; i++ {
 		resp, err := a.chatRequestOnce(msgs, think, tools)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		if len(resp.ToolCalls) == 0 {
-			return resp.Content, nil
+			return resp.Content, toolMsgs, nil
 		}
 
 		msgs = append(msgs, resp)
 		for _, tc := range resp.ToolCalls {
+			wailsruntime.EventsEmit(a.ctx, "chat:status", map[string]any{"state": "tool", "tool": tc.Function.Name})
+
 			result, herr := a.dispatchTool(tc)
 			if herr != nil {
 				slog.Warn("tool call failed", "tool", tc.Function.Name, "error", herr)
@@ -406,10 +450,19 @@ func (a *App) chatWithTools(msgs []api.Message, think api.ThinkValue) (string, e
 				slog.Info("tool call", "tool", tc.Function.Name)
 			}
 			msgs = append(msgs, api.Message{Role: "tool", Content: result})
+
+			argsJSON, jerr := json.Marshal(tc.Function.Arguments)
+			if jerr != nil {
+				slog.Warn("failed to marshal tool arguments for persistence", "tool", tc.Function.Name, "error", jerr)
+			}
+			toolMsgs = append(toolMsgs, store.NewMessage{
+				Role: "tool", Content: tc.Function.Name, Model: a.model, Mode: a.mode, Pinned: false,
+				ToolName: tc.Function.Name, ToolArgs: string(argsJSON), ToolResult: result,
+			})
 		}
 	}
 
-	return "", fmt.Errorf("tool-calling exceeded %d iterations", maxToolIterations)
+	return "", nil, fmt.Errorf("tool-calling exceeded %d iterations", maxToolIterations)
 }
 
 // --- Session management (delegated to store.Store) ---
@@ -460,7 +513,18 @@ func (a *App) RenameSession(id string, title string) error {
 	return a.sess.RenameSession(id, title)
 }
 
-// SaveMessage persists a single message for a given session (frontend-facing).
+// SaveMessage persists a single message for a given session (frontend-facing;
+// not currently called by the frontend, kept as a manual affordance like
+// CreateArtifactManual). Uses the currently active model/mode and pins it by
+// default.
 func (a *App) SaveMessage(sessionID, role, content string) error {
-	return a.sess.SaveMessage(sessionID, role, content)
+	_, err := a.sess.SaveMessage(sessionID, store.NewMessage{Role: role, Content: content, Model: a.model, Mode: a.mode, Pinned: true})
+	return err
+}
+
+// SetMessagePinned toggles whether a message is included in the context sent
+// to the model on future turns. The message stays visible and in the
+// database either way — only its inclusion in context changes.
+func (a *App) SetMessagePinned(sessionID string, seq int, pinned bool) error {
+	return a.sess.SetMessagePinned(sessionID, seq, pinned)
 }

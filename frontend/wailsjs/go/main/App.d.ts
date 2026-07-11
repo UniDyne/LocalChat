@@ -36,9 +36,11 @@ export function RenameSession(arg1:string,arg2:string):Promise<void>;
 
 export function SaveMessage(arg1:string,arg2:string,arg3:string):Promise<void>;
 
-export function SendChat(arg1:string,arg2:Array<main.ChatMessage>):Promise<string>;
+export function SendChat(arg1:string,arg2:Array<main.ChatMessage>):Promise<main.ChatTurnResult>;
 
 export function SetCotMode(arg1:string):Promise<void>;
+
+export function SetMessagePinned(arg1:string,arg2:number,arg3:boolean):Promise<void>;
 
 export function SetModel(arg1:string):Promise<void>;
 

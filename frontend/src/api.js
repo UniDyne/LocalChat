@@ -2,6 +2,7 @@ import { ListModels, SendChat, GetModel, SetModel } from '../wailsjs/go/main/App
 import { ListCotModes, GetCotMode, SetCotMode } from '../wailsjs/go/main/App';
 import { CreateSession, GetCurrentSession, GetSessions, SwitchSession, DeleteSession, RenameSession, GetMessages } from '../wailsjs/go/main/App';
 import { GetArtifacts, GetArtifactContent, CreateArtifactManual } from '../wailsjs/go/main/App';
+import { SetMessagePinned } from '../wailsjs/go/main/App';
 
 /**
  * Return an array of available model names from the configured Ollama server.
@@ -48,9 +49,12 @@ export async function setCotMode(name) {
 }
 
 /**
- * Send a user message (optionally with history) and return the assistant reply.
+ * Send a user message (optionally with history) and return every message
+ * persisted this turn, in order: the user message, an optional "cot" note,
+ * zero or more "tool" calls, and the final "assistant" reply.
  * @param {string} text - The user's message.
- * @param {{role:string,content:string}[]} [history=[]] - Prior messages.
+ * @param {{role:string,content:string}[]} [history=[]] - Prior pinned messages.
+ * @returns {{messages: {seq:number,role:string,content:string,model:string,mode:string,pinned:boolean,toolName?:string,toolArgs?:string,toolResult?:string}[]}}
  */
 export async function sendMessage(text, history = []) {
     if (!text || !text.trim()) throw new Error('Empty message');
@@ -114,10 +118,22 @@ export async function saveMessage(sessionId, role, content) {
 /**
  * Load all messages for a session from the database (for switching sessions).
  * @param {string} sessionId
- * @returns {{role:string,content:string,time:string}[]}
+ * @returns {{seq:number,role:string,content:string,model:string,mode:string,pinned:boolean,toolName:string,toolArgs:string,toolResult:string,time:string}[]}
  */
 export async function loadMessages(sessionId) {
     return await GetMessages(sessionId);
+}
+
+/**
+ * Toggle whether a message is included in the context sent to the model on
+ * future turns. The message itself is never deleted — it stays visible and
+ * in the database either way.
+ * @param {string} sessionId
+ * @param {number} seq
+ * @param {boolean} pinned
+ */
+export async function setMessagePinned(sessionId, seq, pinned) {
+    await SetMessagePinned(sessionId, seq, pinned);
 }
 
 // --- Artifacts ---

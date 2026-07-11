@@ -74,6 +74,10 @@ export function SetCotMode(arg1) {
   return window['go']['main']['App']['SetCotMode'](arg1);
 }
 
+export function SetMessagePinned(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetMessagePinned'](arg1, arg2, arg3);
+}
+
 export function SetModel(arg1) {
   return window['go']['main']['App']['SetModel'](arg1);
 }
