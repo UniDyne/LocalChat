@@ -305,10 +305,12 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 		systemParts = append(systemParts, systemPrompt)
 	}
 
-	// pending collects every message row this turn will persist, in
-	// conversation order — saved to the store only once the whole turn
-	// succeeds, matching the existing all-or-nothing persistence behavior.
-	pending := []store.NewMessage{{Role: "user", Content: userMsg, Model: a.model, Mode: a.mode, Pinned: true}}
+	// turnMsgs accumulates every message row this turn persists, in
+	// conversation order. Each message is saved to the store as soon as it's
+	// produced (not batched until the turn succeeds) so that a turn cut short
+	// by an error — e.g. exceeding maxToolIterations — still leaves everything
+	// that happened so far in the session.
+	turnMsgs := []ChatTurnMessage{a.persist(sessionID, store.NewMessage{Role: "user", Content: userMsg, Model: a.model, Mode: a.mode, Pinned: true})}
 
 	msgs := baseMsgs
 	if a.mode != CotModeNone && a.mode != CotModeBuiltIn && a.mode != "" {
@@ -324,7 +326,7 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 				slog.Warn("cot evaluation failed", "mode", a.mode, "error", err)
 			} else {
 				systemParts = append(systemParts, "Internal reasoning notes — do not reveal or repeat verbatim, use only to inform your final answer:\n"+evaluation)
-				pending = append(pending, store.NewMessage{Role: "cot", Content: evaluation, Model: a.model, Mode: a.mode, Pinned: false})
+				turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{Role: "cot", Content: evaluation, Model: a.model, Mode: a.mode, Pinned: false}))
 			}
 		}
 	}
@@ -334,25 +336,15 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 	}
 
 	think := api.ThinkValue{Value: a.mode == CotModeBuiltIn}
-	fullReply, toolPending, err := a.chatWithTools(msgs, think)
+	fullReply, toolTurnMsgs, err := a.chatWithTools(sessionID, msgs, think)
+	turnMsgs = append(turnMsgs, toolTurnMsgs...)
 	if err != nil {
-		return ChatTurnResult{}, fmt.Errorf("chat request failed: %w", err)
+		// Everything up to the failure (user message, cot note, dispatched tool
+		// calls) has already been persisted via a.persist above/inside
+		// chatWithTools, so the caller still gets a full record of the turn.
+		return ChatTurnResult{Messages: turnMsgs}, fmt.Errorf("chat request failed: %w", err)
 	}
-	pending = append(pending, toolPending...)
-	pending = append(pending, store.NewMessage{Role: "assistant", Content: fullReply, Model: a.model, Mode: a.mode, Pinned: true})
-
-	turnMsgs := make([]ChatTurnMessage, 0, len(pending))
-	for _, p := range pending {
-		seq, err := a.sess.SaveMessage(sessionID, p)
-		if err != nil {
-			slog.Warn("failed to persist message", "role", p.Role, "session", sessionID, "error", err)
-			continue
-		}
-		turnMsgs = append(turnMsgs, ChatTurnMessage{
-			Seq: seq, Role: p.Role, Content: p.Content, Model: p.Model, Mode: p.Mode, Pinned: p.Pinned,
-			ToolName: p.ToolName, ToolArgs: p.ToolArgs, ToolResult: p.ToolResult,
-		})
-	}
+	turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{Role: "assistant", Content: fullReply, Model: a.model, Mode: a.mode, Pinned: true}))
 
 	// Title the session from the user's opening message on their first turn.
 	if isFirstMessage {
@@ -417,25 +409,27 @@ func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools ap
 
 // maxToolIterations caps how many rounds of tool calls a single chat turn may
 // make, guarding against a model that keeps calling tools indefinitely.
-const maxToolIterations = 6
+const maxToolIterations = 32
 
 // chatWithTools runs the tool-calling loop for a chat turn: send the request
 // with the tool registry attached, execute any requested tool calls, feed
 // their results back as "tool" messages, and repeat until the model responds
 // with no more tool calls (or maxToolIterations is hit). Each dispatched tool
-// call is also returned as a store.NewMessage (role "tool", unpinned) for the
-// caller to persist alongside the rest of the turn.
-func (a *App) chatWithTools(msgs []api.Message, think api.ThinkValue) (string, []store.NewMessage, error) {
+// call is persisted immediately (role "tool", unpinned) and also returned as
+// a ChatTurnMessage so the caller can report it to the frontend — even if the
+// loop later errors out (e.g. the iteration cap is hit), everything dispatched
+// so far is already in the session.
+func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.ThinkValue) (string, []ChatTurnMessage, error) {
 	tools := toAPITools(a.toolRegistry())
-	var toolMsgs []store.NewMessage
+	var turnMsgs []ChatTurnMessage
 
 	for i := 0; i < maxToolIterations; i++ {
 		resp, err := a.chatRequestOnce(msgs, think, tools)
 		if err != nil {
-			return "", nil, err
+			return "", turnMsgs, err
 		}
 		if len(resp.ToolCalls) == 0 {
-			return resp.Content, toolMsgs, nil
+			return resp.Content, turnMsgs, nil
 		}
 
 		msgs = append(msgs, resp)
@@ -455,14 +449,30 @@ func (a *App) chatWithTools(msgs []api.Message, think api.ThinkValue) (string, [
 			if jerr != nil {
 				slog.Warn("failed to marshal tool arguments for persistence", "tool", tc.Function.Name, "error", jerr)
 			}
-			toolMsgs = append(toolMsgs, store.NewMessage{
+			turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{
 				Role: "tool", Content: tc.Function.Name, Model: a.model, Mode: a.mode, Pinned: false,
 				ToolName: tc.Function.Name, ToolArgs: string(argsJSON), ToolResult: result,
-			})
+			}))
 		}
 	}
 
-	return "", nil, fmt.Errorf("tool-calling exceeded %d iterations", maxToolIterations)
+	return "", turnMsgs, fmt.Errorf("tool-calling exceeded %d iterations", maxToolIterations)
+}
+
+// persist saves a single message row immediately and returns it as a
+// frontend-facing ChatTurnMessage. Called as each message is produced during
+// a turn (user, cot note, tool calls, assistant) rather than batching
+// everything until the turn completes, so a turn that errors out partway
+// through still leaves what happened so far in the session.
+func (a *App) persist(sessionID string, msg store.NewMessage) ChatTurnMessage {
+	seq, err := a.sess.SaveMessage(sessionID, msg)
+	if err != nil {
+		slog.Warn("failed to persist message", "role", msg.Role, "session", sessionID, "error", err)
+	}
+	return ChatTurnMessage{
+		Seq: seq, Role: msg.Role, Content: msg.Content, Model: msg.Model, Mode: msg.Mode, Pinned: msg.Pinned,
+		ToolName: msg.ToolName, ToolArgs: msg.ToolArgs, ToolResult: msg.ToolResult,
+	}
 }
 
 // --- Session management (delegated to store.Store) ---

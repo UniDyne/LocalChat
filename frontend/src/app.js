@@ -25,6 +25,8 @@ const statusText = document.querySelector('.status-left span:last-child'); // "R
 const statusDot  = document.querySelector('.status-dot');
 const statusBarModel = document.querySelector('.status-right > span:first-child'); // shows current model name
 const statusBarMode  = document.getElementById('statusMode'); // shows current cot mode
+const queueBanner    = document.getElementById('queueBanner');
+const queueStopBtn   = document.getElementById('queueStopBtn');
 
 // --- Helpers ---
 function getTimestamp() {
@@ -108,7 +110,7 @@ function openToolLightbox(rec) {
 // its record (so callers can reconcile it later, e.g. once a seq is known).
 // entry: {seq=null, role, content, model='', mode='', pinned=true, toolName='', toolArgs='', toolResult=''}
 export function addMessage(entry) {
-    const rec = { seq: null, model: '', mode: '', pinned: true, toolName: '', toolArgs: '', toolResult: '', ...entry };
+    const rec = { seq: null, model: '', mode: '', pinned: true, toolName: '', toolArgs: '', toolResult: '', auto: false, ...entry };
     timeline.push(rec);
 
     const chatLog = document.getElementById('chatLog');
@@ -147,6 +149,7 @@ export function addMessage(entry) {
             <div class="msg-body">
                 <div class="msg-header">
                     <span>${rec.role === 'user' ? 'You' : 'Assistant'}</span>
+                    ${rec.auto ? '<span class="msg-auto-badge">auto</span>' : ''}
                     <span class="msg-time">${getTimestamp()}</span>
                     ${metaBits ? `<span class="msg-model-badge">${escapeHtml(metaBits)}</span>` : ''}
                 </div>
@@ -171,19 +174,16 @@ function setStatus(text, state) {
 }
 
 // --- Send message ---
-async function doSend() {
-    const text = textarea.value.trim();
-    if (!text) return;
-
+// Core send+render path shared by the manual send button and the
+// auto-continuing task queue below. `auto` marks the rendered user bubble so
+// queue-driven steps are visually distinguishable from hand-typed ones.
+async function sendAndRender(text, { auto = false } = {}) {
     // Snapshot context before rendering this turn's user bubble — the backend
     // appends `text` itself as the final turn, so history must not include it.
     const priorHistory = computeHistory();
     // Render optimistically for instant feedback; reconciled with its real
     // seq/model/mode once the round-trip below returns.
-    const pendingUser = addMessage({ role: 'user', content: text, pinned: true });
-
-    textarea.value     = '';
-    textarea.style.height = 'auto';
+    const pendingUser = addMessage({ role: 'user', content: text, pinned: true, auto });
 
     setStatus('Sending…', 'loading');
 
@@ -203,6 +203,8 @@ async function doSend() {
             addMessage(m);
         }
 
+        maybeAdvanceTaskQueue(msgs);
+
         if (!msgs.some(m => m.role === 'assistant')) {
             // Ollama may return empty for certain models — just note it.
             setStatus('Ready', 'ready');
@@ -210,6 +212,7 @@ async function doSend() {
     } catch (err) {
         console.error(err);
         addMessage({ role: 'assistant', content: `<em style="color:var(--text-muted)">Error: ${escapeHtml(String(err))}</em>`, pinned: false });
+        stopTaskQueue(); // a failure mid-run halts the queue rather than silently continuing
     } finally {
         setStatus('Ready', 'ready');
         // Refresh sidebar so session message counts stay current.
@@ -218,6 +221,82 @@ async function doSend() {
         renderArtifactList();
     }
 }
+
+async function doSend() {
+    const text = textarea.value.trim();
+    if (!text) return;
+
+    textarea.value     = '';
+    textarea.style.height = 'auto';
+
+    await sendAndRender(text);
+}
+
+// --- Self-queued task loop ---
+// The queue_tasks tool (tools_queue.go) is stateless server-side: its result
+// is just the validated task list, echoed back as JSON. All the looping
+// happens here — after any turn resolves, if it included a queue_tasks call,
+// pull the list out and keep auto-sending the next task until it's empty.
+const MAX_QUEUE_STEPS_TOTAL = 20; // cross-turn safety cap, independent of the tool's own per-call cap
+let taskQueue = [];
+let queueTotal = 0;
+let queueIndex = 0;
+let queueStepsRun = 0;
+let queueRunning = false;
+
+function maybeAdvanceTaskQueue(msgs) {
+    const call = msgs.find(m => m.role === 'tool' && m.toolName === 'queue_tasks');
+    if (call) {
+        let newTasks = [];
+        try { newTasks = JSON.parse(call.toolResult) || []; } catch { /* malformed — ignore, nothing to queue */ }
+        if (Array.isArray(newTasks) && newTasks.length > 0) {
+            // A queue_tasks call mid-run just extends the remaining queue —
+            // handles the model re-queuing more steps as it goes, for free.
+            taskQueue.push(...newTasks);
+            queueTotal += newTasks.length;
+            queueRunning = true;
+        }
+    }
+
+    if (!queueRunning) return;
+
+    if (taskQueue.length === 0 || queueStepsRun >= MAX_QUEUE_STEPS_TOTAL) {
+        stopTaskQueue();
+        return;
+    }
+
+    const next = taskQueue.shift();
+    queueIndex++;
+    queueStepsRun++;
+    updateQueueBanner();
+    // Deliberately not awaited — a detached continuation, not a bug. This lets
+    // the current turn's finally block (sidebar refresh, status reset) settle
+    // immediately instead of waiting on the entire remaining queue.
+    sendAndRender(next, { auto: true });
+}
+
+export function stopTaskQueue() {
+    taskQueue = [];
+    queueRunning = false;
+    queueIndex = 0;
+    queueTotal = 0;
+    updateQueueBanner();
+}
+
+function updateQueueBanner() {
+    // Disabled while a queue runs so a manually-typed message can't interleave
+    // with auto-steps and corrupt turn ordering — stop-then-type, not concurrent.
+    textarea.disabled = queueRunning;
+    sendBtn.disabled = queueRunning;
+    if (!queueBanner) return;
+    queueBanner.style.display = queueRunning ? '' : 'none';
+    if (queueRunning) {
+        const label = queueBanner.querySelector('.queue-banner-text');
+        if (label) label.textContent = `Running step ${queueIndex} of ${queueTotal}…`;
+    }
+}
+
+queueStopBtn?.addEventListener('click', stopTaskQueue);
 
 // --- Live status from the backend (chain-of-thought / tool execution) ---
 const THINKING_LABELS = ['Thinking…', 'Cogitating…', 'Pondering…'];

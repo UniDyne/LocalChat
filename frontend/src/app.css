@@ -98,6 +98,12 @@
   /* Empty state */
   .empty-state{flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px}
 
+  /* Task queue progress banner */
+  .queue-banner{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;background:var(--bg-tertiary);border-top:1px solid var(--border);font-size:11px;color:var(--text-secondary);flex-shrink:0}
+  .queue-stop-btn{background:none;border:1px solid var(--border);color:var(--text-primary);cursor:pointer;font-size:11px;border-radius:var(--radius);padding:3px 10px}
+  .queue-stop-btn:hover{border-color:#e06c75;color:#e06c75}
+  .msg-auto-badge{font-size:9px;color:var(--text-muted);background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:0 4px;text-transform:uppercase;letter-spacing:.3px}
+
   /* Bottom Input Area */
   .input-area{border-top:1px solid var(--border);background:var(--bg-secondary);padding:8px;flex-shrink:0}
 

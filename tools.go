@@ -25,6 +25,7 @@ func (a *App) toolRegistry() []ToolDef {
 		a.createArtifactTool(),
 		a.listArtifactsTool(),
 		a.getArtifactTool(),
+		a.queueTasksTool(),
 	}
 }
 
