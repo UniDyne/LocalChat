@@ -409,7 +409,7 @@ func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools ap
 
 // maxToolIterations caps how many rounds of tool calls a single chat turn may
 // make, guarding against a model that keeps calling tools indefinitely.
-const maxToolIterations = 32
+const maxToolIterations = 6
 
 // chatWithTools runs the tool-calling loop for a chat turn: send the request
 // with the tool registry attached, execute any requested tool calls, feed
@@ -463,16 +463,21 @@ func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.Thin
 // frontend-facing ChatTurnMessage. Called as each message is produced during
 // a turn (user, cot note, tool calls, assistant) rather than batching
 // everything until the turn completes, so a turn that errors out partway
-// through still leaves what happened so far in the session.
+// through still leaves what happened so far in the session. It also emits a
+// "chat:message" event immediately, so the frontend can render tool calls and
+// intermediate notes live as the tool-calling loop runs, instead of waiting
+// for the whole (possibly multi-iteration) turn to finish.
 func (a *App) persist(sessionID string, msg store.NewMessage) ChatTurnMessage {
 	seq, err := a.sess.SaveMessage(sessionID, msg)
 	if err != nil {
 		slog.Warn("failed to persist message", "role", msg.Role, "session", sessionID, "error", err)
 	}
-	return ChatTurnMessage{
+	turnMsg := ChatTurnMessage{
 		Seq: seq, Role: msg.Role, Content: msg.Content, Model: msg.Model, Mode: msg.Mode, Pinned: msg.Pinned,
 		ToolName: msg.ToolName, ToolArgs: msg.ToolArgs, ToolResult: msg.ToolResult,
 	}
+	wailsruntime.EventsEmit(a.ctx, "chat:message", map[string]any{"sessionId": sessionID, "message": turnMsg})
+	return turnMsg
 }
 
 // --- Session management (delegated to store.Store) ---

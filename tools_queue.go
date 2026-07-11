@@ -22,7 +22,7 @@ func (a *App) queueTasksTool() ToolDef {
 		Description: "Queue a sequence of follow-up tasks to work through one at a time, " +
 			"for multi-step work that can't be finished in a single reply. Each item should " +
 			"be a self-contained instruction for that step, written as if the user were asking " +
-			"it. The app automatically runs each queued task in order after this turn, feeding " +
+			"it. The app automatically runs each queued task in order **after the end of this turn**, feeding " +
 			"you one at a time, until the queue is empty or the user stops it.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
@@ -50,11 +50,16 @@ func (a *App) queueTasksTool() ToolDef {
 				tasks = tasks[:maxQueuedTasks]
 			}
 
+			
+			/*
 			echo, err := json.Marshal(tasks)
 			if err != nil {
 				return "", fmt.Errorf("marshal queued tasks: %w", err)
 			}
+			
 			return string(echo), nil
+			*/
+			return "Tasks queued. Will execute after this turn.", nil
 		},
 	}
 }

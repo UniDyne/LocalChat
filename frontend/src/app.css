@@ -125,6 +125,7 @@
   /* Right Sidebar */
   .sidebar-right{width:0;background:var(--bg-secondary);border-left:1px solid var(--border);transition:width .15s ease;overflow:hidden;flex-shrink:0;display:flex;flex-direction:column;align-items:stretch}
   .sidebar-right.expanded{width:260px;border-left:1px solid var(--border)}
+  #artifactList{flex:1;overflow-y:auto}
   .right-empty{color:var(--text-muted);font-size:12px;text-align:center;padding:20px}
 
   /* Artifact list */

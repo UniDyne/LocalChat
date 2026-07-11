@@ -6,6 +6,12 @@ import { renderArtifactList } from './artifacts'
 // --- Session Management ---
 let activeSessionId = null;
 
+// Exposed so app.js can filter live backend events (chat:message,
+// artifact:created) to the session currently on screen.
+export function getActiveSessionId() {
+    return activeSessionId;
+}
+
 const sessionListEl = document.getElementById('sessionList');
 
 async function initSessions() {

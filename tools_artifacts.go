@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // createArtifactTool lets the model persist a text/markdown/code artifact
@@ -31,10 +33,17 @@ func (a *App) createArtifactTool() ToolDef {
 			if contentType == "" {
 				contentType = "text"
 			}
-			id, err := a.sess.CreateArtifact(a.sess.CurrentSession(), title, content, contentType)
+			sessionID := a.sess.CurrentSession()
+			id, err := a.sess.CreateArtifact(sessionID, title, content, contentType)
 			if err != nil {
 				return "", err
 			}
+			// Emitted immediately so the sidebar can pick up the new artifact
+			// while the model is still mid-turn, rather than only refreshing
+			// once the whole turn (and its finally-block refresh) completes.
+			wailsruntime.EventsEmit(a.ctx, "artifact:created", map[string]any{
+				"sessionId": sessionID, "id": id, "title": title, "contentType": contentType,
+			})
 			return fmt.Sprintf("artifact created: %s (%s)", id, title), nil
 		},
 	}

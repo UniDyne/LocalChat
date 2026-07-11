@@ -2,7 +2,7 @@ import './style.css';
 import './app.css';
 import { sendMessage, setModel, getModel, listModels, getCurrentSession, setMessagePinned } from './api';
 import { listCotModes, getCotMode, setCotMode } from './api';
-import { renderSessionList } from './sessions'
+import { renderSessionList, getActiveSessionId } from './sessions'
 import { renderArtifactList } from './artifacts'
 import { escapeHtml, renderMarkdown, renderHighlighted } from './content'
 import { EventsOn } from '../wailsjs/runtime/runtime'
@@ -15,6 +15,11 @@ import { EventsOn } from '../wailsjs/runtime/runtime'
 // the backend round-trip returns the persisted row (see doSend).
 let timeline = [];
 let currentModel = '';
+
+// seqs already rendered into the timeline (via a live "chat:message" event or
+// the final batch result — whichever arrives first), so the other one is a
+// no-op instead of a duplicate bubble. Cleared alongside timeline.
+let renderedSeqs = new Set();
 
 // --- DOM refs ---
 const textarea   = document.querySelector('.chat-textarea');
@@ -36,6 +41,7 @@ function getTimestamp() {
 
 export function resetMessages() {
     timeline = [];
+    renderedSeqs = new Set();
 }
 
 // Messages sent to the backend as context on the next turn: pinned
@@ -163,6 +169,43 @@ export function addMessage(entry) {
     return rec;
 }
 
+// Renders one persisted message, whether it arrived via the live
+// "chat:message" event (while the backend is still mid-turn) or in the final
+// batch returned by sendMessage — whichever gets there first wins, the other
+// call is a no-op, so tool calls/notes show up as they happen rather than
+// all at once at the end.
+function renderIncomingMessage(m) {
+    if (m.seq != null && renderedSeqs.has(m.seq)) return;
+    if (m.seq != null) renderedSeqs.add(m.seq);
+
+    if (m.role === 'user') {
+        // The optimistic bubble is already on screen — reconcile it in place
+        // instead of adding a duplicate.
+        const pending = timeline.find(r => r.role === 'user' && r.seq === null);
+        if (pending) {
+            pending.seq = m.seq;
+            pending.model = m.model;
+            pending.mode = m.mode;
+            return;
+        }
+    }
+    addMessage(m);
+}
+
+// Live backend events: a message is pushed here as soon as it's persisted
+// (see a.persist in app.go), and an artifact as soon as it's created — both
+// well before the RPC for the whole turn returns.
+EventsOn('chat:message', (payload) => {
+    if (!payload?.message) return;
+    if (payload.sessionId !== getActiveSessionId()) return;
+    renderIncomingMessage(payload.message);
+});
+EventsOn('artifact:created', (payload) => {
+    if (!payload) return;
+    if (payload.sessionId !== getActiveSessionId()) return;
+    renderArtifactList();
+});
+
 function setStatus(text, state) {
     // Update the status dot and label.
     if (statusDot) {
@@ -181,9 +224,10 @@ async function sendAndRender(text, { auto = false } = {}) {
     // Snapshot context before rendering this turn's user bubble — the backend
     // appends `text` itself as the final turn, so history must not include it.
     const priorHistory = computeHistory();
-    // Render optimistically for instant feedback; reconciled with its real
-    // seq/model/mode once the round-trip below returns.
-    const pendingUser = addMessage({ role: 'user', content: text, pinned: true, auto });
+    // Render optimistically for instant feedback; reconciled in place (see
+    // renderIncomingMessage) with its real seq/model/mode once either the live
+    // "chat:message" event or the round-trip below delivers the persisted row.
+    addMessage({ role: 'user', content: text, pinned: true, auto });
 
     setStatus('Sending…', 'loading');
 
@@ -191,16 +235,12 @@ async function sendAndRender(text, { auto = false } = {}) {
         const result = await sendMessage(text, priorHistory);
         const msgs = result?.messages || [];
 
-        const userTurn = msgs.find(m => m.role === 'user');
-        if (userTurn) {
-            pendingUser.seq = userTurn.seq;
-            pendingUser.model = userTurn.model;
-            pendingUser.mode = userTurn.mode;
-        }
-
+        // Each of these has very likely already been rendered live via the
+        // "chat:message" event as the backend produced it — renderIncomingMessage
+        // dedupes by seq, so this is just a fallback for anything that wasn't
+        // (e.g. an event that arrived after this promise already resolved).
         for (const m of msgs) {
-            if (m.role === 'user') continue; // already rendered optimistically above
-            addMessage(m);
+            renderIncomingMessage(m);
         }
 
         maybeAdvanceTaskQueue(msgs);
