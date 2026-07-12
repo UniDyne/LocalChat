@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -165,7 +166,7 @@ func systemPromptPath() string {
 
 // loadSystemPrompt reads the configurable system prompt from conf/SYSTEM.md.
 // A missing file is not an error — the system prompt is optional, and the
-// file is re-read on every call (same reasoning as cotPrompt: it may be
+// file is re-read on every call (same reasoning as loadCotConfig: it may be
 // hand-edited while the app is running).
 func loadSystemPrompt() (string, error) {
 	data, err := os.ReadFile(systemPromptPath())
@@ -223,13 +224,76 @@ func (a *App) SetCotMode(name string) error {
 	return nil
 }
 
-// cotPrompt loads the markdown prompt for a custom (non-reserved) chain-of-thought mode.
-func cotPrompt(name string) (string, error) {
+// cotDefaultMaxTokens caps the hidden evaluation pass's response length when
+// a cot mode's frontmatter omits max_tokens (or the file has no frontmatter
+// at all). The eval prompt (cotEvalWrapper) already asks for a single tight
+// pass, but some models still loop back and redo the analysis two or three
+// times over ("wait, let me reconsider...") or need more room for a genuinely
+// complex prompt — this cap is a backstop against the former, sized for the
+// common case. Set max_tokens in a specific mode's frontmatter to raise it
+// for that mode alone rather than raising the default for every mode.
+const cotDefaultMaxTokens = 1024
+
+// cotConfig is a custom (non-reserved) chain-of-thought mode's loaded prompt
+// body plus its per-mode settings.
+type cotConfig struct {
+	Prompt    string
+	MaxTokens int
+}
+
+// loadCotConfig loads the markdown prompt and frontmatter settings for a
+// custom chain-of-thought mode. Frontmatter is optional — a file with none
+// gets cotDefaultMaxTokens and its whole content as the prompt body.
+func loadCotConfig(name string) (cotConfig, error) {
 	data, err := os.ReadFile(filepath.Join(cotDir(), name+".md"))
 	if err != nil {
-		return "", fmt.Errorf("read cot prompt %q: %w", name, err)
+		return cotConfig{}, fmt.Errorf("read cot prompt %q: %w", name, err)
 	}
-	return string(data), nil
+
+	fields, body := parseCotFrontmatter(string(data))
+	cfg := cotConfig{Prompt: body, MaxTokens: cotDefaultMaxTokens}
+	if v, ok := fields["max_tokens"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxTokens = n
+		} else {
+			slog.Warn("invalid max_tokens in cot frontmatter, using default", "mode", name, "value", v, "default", cotDefaultMaxTokens)
+		}
+	}
+	return cfg, nil
+}
+
+// parseCotFrontmatter splits a cot file into its frontmatter fields and body.
+// Hand-rolled minimal parser, not a full YAML parser — mirrors
+// skill.readFrontmatter (duplicated rather than imported, same reasoning as
+// skill.Dir duplicating the cotDir/confDir convention): only flat single-line
+// "key: value" pairs between a leading and closing "---" line are supported.
+func parseCotFrontmatter(data string) (map[string]string, string) {
+	lines := strings.Split(data, "\n")
+	fields := map[string]string{}
+
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return fields, data
+	}
+
+	closeIdx := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			closeIdx = i
+			break
+		}
+		if idx := strings.Index(lines[i], ":"); idx > 0 {
+			key := strings.TrimSpace(lines[i][:idx])
+			val := strings.TrimSpace(lines[i][idx+1:])
+			fields[key] = val
+		}
+	}
+
+	if closeIdx == -1 {
+		return map[string]string{}, data
+	}
+
+	body := strings.TrimLeft(strings.Join(lines[closeIdx+1:], "\n"), "\n")
+	return fields, body
 }
 
 // cotEvalWrapper frames a custom cot prompt for the hidden evaluation pass.
@@ -248,7 +312,7 @@ Apply this framework to the user's message that follows:
 %s
 ---
 
-Produce your analysis now. Do not answer the user's question or request directly — stop at the analysis.`
+Produce your analysis now, in a single pass. Do not answer the user's question or request directly — stop at the analysis. Write it once and commit to it: do not restart, redo, or re-run the framework from the top to second-guess or correct an earlier step — if you notice a mistake, correct it in place and move on. Keep it tight — bullet points over prose, no repeating a point already made in an earlier step.`
 
 // cotAnswerWrapper folds the hidden evaluation back in as part of the final
 // user turn, rather than the system message. Instructions placed in a system
@@ -260,6 +324,8 @@ const cotAnswerWrapper = `%s
 
 ---
 The section above is the prompt to answer. Below are your own hidden internal reasoning notes on it, produced in a prior step the user never saw — use them to inform your answer, but do not mention, quote, or refer to them ("notes", "analysis", etc.) in your reply. Just answer the prompt directly, as if this were the only step.
+
+If the notes describe something that spans multiple distinct steps, or the full deliverable would be long (e.g. a multi-file app, a long document), do not attempt to fit the whole thing into this one reply — use queue_tasks to hand the remaining steps to yourself one at a time, and create_artifact for the actual deliverable content, per your operating instructions. Only write the full thing directly here if it's genuinely short.
 
 %s`
 
@@ -358,14 +424,14 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 
 	msgs := baseMsgs
 	if a.mode != CotModeNone && a.mode != CotModeBuiltIn && a.mode != "" {
-		if prompt, err := cotPrompt(a.mode); err != nil {
+		if cot, err := loadCotConfig(a.mode); err != nil {
 			slog.Warn("failed to load cot prompt", "mode", a.mode, "error", err)
 		} else {
-			evalParts := append(append([]string{}, systemParts...), fmt.Sprintf(cotEvalWrapper, prompt))
+			evalParts := append(append([]string{}, systemParts...), fmt.Sprintf(cotEvalWrapper, cot.Prompt))
 			evalMsgs := append([]api.Message{{Role: "system", Content: strings.Join(evalParts, "\n\n")}}, baseMsgs...)
 
 			wailsruntime.EventsEmit(a.ctx, "chat:status", map[string]any{"state": "thinking"})
-			evaluation, err := a.chatOnce(evalMsgs, api.ThinkValue{Value: false})
+			evaluation, err := a.chatOnce(evalMsgs, api.ThinkValue{Value: false}, map[string]any{"num_predict": cot.MaxTokens})
 			if err != nil {
 				slog.Warn("cot evaluation failed", "mode", a.mode, "error", err)
 			} else {
@@ -418,15 +484,15 @@ func titleFromMessage(msg string, maxLen int) string {
 // attached) and returns the full reply text. Used for the cot hidden
 // evaluation pass, which is a throwaway internal note that shouldn't be able
 // to trigger skill/artifact tool calls.
-func (a *App) chatOnce(msgs []api.Message, think api.ThinkValue) (string, error) {
-	resp, err := a.chatRequestOnce(msgs, think, nil)
+func (a *App) chatOnce(msgs []api.Message, think api.ThinkValue, options map[string]any) (string, error) {
+	resp, err := a.chatRequestOnce(msgs, think, nil, options)
 	return resp.Content, err
 }
 
 // chatRequestOnce issues a single non-streaming chat completion request,
 // optionally with a tool registry attached, and returns the full response
 // message (content plus any requested tool calls).
-func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools api.Tools) (api.Message, error) {
+func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools api.Tools, options map[string]any) (api.Message, error) {
 	stream := false
 	req := &api.ChatRequest{
 		Model:    a.model,
@@ -434,6 +500,7 @@ func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools ap
 		Stream:   &stream,
 		Think:    &think,
 		Tools:    tools,
+		Options:  options,
 	}
 
 	var full api.Message
@@ -476,7 +543,7 @@ func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.Thin
 	var turnMsgs []ChatTurnMessage
 
 	for i := 0; i < maxToolIterations; i++ {
-		resp, err := a.chatRequestOnce(msgs, think, tools)
+		resp, err := a.chatRequestOnce(msgs, think, tools, nil)
 		if err != nil {
 			return "", turnMsgs, err
 		}

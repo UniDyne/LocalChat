@@ -40,7 +40,7 @@ func Dir() string {
 // Index parses the frontmatter of every markdown file in the skills directory
 // and returns their metadata, sorted by name. It re-scans the directory on
 // every call rather than caching, so hand-edited skill files are picked up
-// immediately without an app restart (same reasoning as cotPrompt in app.go).
+// immediately without an app restart (same reasoning as loadCotConfig in app.go).
 func Index() ([]Meta, error) {
 	dir := Dir()
 	entries, err := os.ReadDir(dir)
