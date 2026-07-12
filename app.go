@@ -329,6 +329,19 @@ If the notes describe something that spans multiple distinct steps, or the full 
 
 %s`
 
+// cotAnswerWrapper folds the hidden evaluation back in as part of the final
+// user turn, rather than the system message. Instructions placed in a system
+// message ahead of the whole conversation history compete with everything
+// else for the model's attention ("lost in the middle"); folding the notes
+// into the last user turn puts them exactly where the model attends most
+// strongly, right before it starts generating the reply.
+const cotAnswerWrapper = `%s
+
+---
+The section above is the prompt to answer. Below are your own hidden internal reasoning notes on it, produced in a prior step the user never saw — use them to inform your answer, but do not mention, quote, or refer to them ("notes", "analysis", etc.) in your reply. Just answer the prompt directly, as if this were the only step.
+
+%s`
+
 // ChatMessage represents a message in the conversation history.
 type ChatMessage struct {
 	Role    string `json:"role"`
