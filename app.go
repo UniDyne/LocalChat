@@ -232,6 +232,24 @@ func cotPrompt(name string) (string, error) {
 	return string(data), nil
 }
 
+// cotEvalWrapper frames a custom cot prompt for the hidden evaluation pass.
+// The prompt files themselves are written as reasoning frameworks (numbered
+// steps, checklists) and vary in whether they explicitly tell the model not
+// to answer yet — several don't. Without an explicit frame, the model reads
+// the steps as instructions for the reply itself and answers the user right
+// here, which defeats the point of a separate hidden pass. This wrapper is
+// prepended/appended around every custom prompt so that framing never
+// depends on how a given .md file happens to be worded.
+const cotEvalWrapper = `You are in a hidden internal evaluation step, not the conversation itself. The user cannot see this step and has not yet received a reply. Do not write a final answer, greeting, or any text addressed to the user here — only produce internal analysis notes for the framework below. A separate pass afterward will use these notes to compose the actual reply.
+
+Apply this framework to the user's message that follows:
+
+---
+%s
+---
+
+Produce your analysis now. Do not answer the user's question or request directly — stop at the analysis.`
+
 // ChatMessage represents a message in the conversation history.
 type ChatMessage struct {
 	Role    string `json:"role"`
@@ -330,7 +348,7 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 		if prompt, err := cotPrompt(a.mode); err != nil {
 			slog.Warn("failed to load cot prompt", "mode", a.mode, "error", err)
 		} else {
-			evalParts := append(append([]string{}, systemParts...), prompt)
+			evalParts := append(append([]string{}, systemParts...), fmt.Sprintf(cotEvalWrapper, prompt))
 			evalMsgs := append([]api.Message{{Role: "system", Content: strings.Join(evalParts, "\n\n")}}, baseMsgs...)
 
 			wailsruntime.EventsEmit(a.ctx, "chat:status", map[string]any{"state": "thinking"})
@@ -415,7 +433,7 @@ func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools ap
 
 // maxToolIterations caps how many rounds of tool calls a single chat turn may
 // make, guarding against a model that keeps calling tools indefinitely.
-const maxToolIterations = 6
+const maxToolIterations = 16
 
 // chatWithTools runs the tool-calling loop for a chat turn: send the request
 // with the tool registry attached, execute any requested tool calls, feed

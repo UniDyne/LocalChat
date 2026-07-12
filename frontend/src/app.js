@@ -146,16 +146,18 @@ export function addMessage(entry) {
         });
         wirePinButton(div, rec);
     } else {
-        div.className = `message msg-${rec.role}${rec.pinned ? '' : ' msg-unpinned'}`;
+        const isTask = rec.role === 'user' && rec.auto;
+        div.className = `message msg-${rec.role}${isTask ? ' msg-task' : ''}${rec.pinned ? '' : ' msg-unpinned'}`;
         const md = renderMarkdown(rec.content);
         const metaBits = [rec.model, (rec.mode && rec.mode !== 'none') ? rec.mode : ''].filter(Boolean).join(' · ');
+        const avatarLetter = isTask ? 'T' : (rec.role === 'user' ? 'U' : 'A');
+        const headerLabel = isTask ? 'Task' : (rec.role === 'user' ? 'You' : 'Assistant');
         div.innerHTML = `
             ${pinButtonHtml(rec.pinned)}
-            <div class="msg-avatar">${rec.role === 'user' ? 'U' : 'A'}</div>
+            <div class="msg-avatar">${avatarLetter}</div>
             <div class="msg-body">
                 <div class="msg-header">
-                    <span>${rec.role === 'user' ? 'You' : 'Assistant'}</span>
-                    ${rec.auto ? '<span class="msg-auto-badge">auto</span>' : ''}
+                    <span>${headerLabel}</span>
                     <span class="msg-time">${getTimestamp()}</span>
                     ${metaBits ? `<span class="msg-model-badge">${escapeHtml(metaBits)}</span>` : ''}
                 </div>
