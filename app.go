@@ -250,6 +250,19 @@ Apply this framework to the user's message that follows:
 
 Produce your analysis now. Do not answer the user's question or request directly — stop at the analysis.`
 
+// cotAnswerWrapper folds the hidden evaluation back in as part of the final
+// user turn, rather than the system message. Instructions placed in a system
+// message ahead of the whole conversation history compete with everything
+// else for the model's attention ("lost in the middle"); folding the notes
+// into the last user turn puts them exactly where the model attends most
+// strongly, right before it starts generating the reply.
+const cotAnswerWrapper = `%s
+
+---
+The section above is the prompt to answer. Below are your own hidden internal reasoning notes on it, produced in a prior step the user never saw — use them to inform your answer, but do not mention, quote, or refer to them ("notes", "analysis", etc.) in your reply. Just answer the prompt directly, as if this were the only step.
+
+%s`
+
 // ChatMessage represents a message in the conversation history.
 type ChatMessage struct {
 	Role    string `json:"role"`
@@ -356,14 +369,21 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 			if err != nil {
 				slog.Warn("cot evaluation failed", "mode", a.mode, "error", err)
 			} else {
-				systemParts = append(systemParts, "Internal reasoning notes — do not reveal or repeat verbatim, use only to inform your final answer:\n"+evaluation)
 				turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{Role: "cot", Content: evaluation, Model: a.model, Mode: a.mode, Pinned: false}))
+
+				// Fold the evaluation into the final user turn itself (not the
+				// system message, and not the persisted/history copy of the
+				// turn — baseMsgs and the stored user row above keep the plain
+				// prompt so future turns don't replay the CoT note back at the
+				// model as if the user had written it).
+				augmented := fmt.Sprintf(cotAnswerWrapper, userMsg, evaluation)
+				msgs = append(append([]api.Message{}, baseMsgs[:len(baseMsgs)-1]...), api.Message{Role: "user", Content: augmented})
 			}
 		}
 	}
 
 	if len(systemParts) > 0 {
-		msgs = append([]api.Message{{Role: "system", Content: strings.Join(systemParts, "\n\n")}}, baseMsgs...)
+		msgs = append([]api.Message{{Role: "system", Content: strings.Join(systemParts, "\n\n")}}, msgs...)
 	}
 
 	think := api.ThinkValue{Value: a.mode == CotModeBuiltIn}
