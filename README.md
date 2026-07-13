@@ -2,8 +2,8 @@
 
 A local-first desktop chat client for [Ollama](https://ollama.com), built with
 [Wails](https://wails.io) (Go backend + a plain HTML/CSS/JS frontend, no
-framework). It looks like a fairly ordinary LLM chat app — sessions, a model
-picker, tool use, persisted artifacts — but its reason for existing is a
+framework). It looks like a fairly ordinary LLM chat app. Sessions, a model
+picker, tool use, persisted artifacts... However, its reason for existing is a
 different way of getting a local model to reason before it answers.
 
 
@@ -15,8 +15,8 @@ different way of getting a local model to reason before it answers.
 
 Many local models expose a native "thinking" mode (a `<think>` block the
 model fills in before its real answer). It works, but you're stuck with
-whatever reasoning style the model defaults to, and — especially on smaller
-models — it's common for the model to draft (or even leak) its actual answer
+whatever reasoning style the model defaults to, and (especially on smaller
+models) it's common for the model to draft (or even leak) its actual answer
 inside the thinking block instead of using it to *plan* the answer.
 
 LocalChat replaces that with a **directed chain-of-thought pass**: instead of
@@ -35,9 +35,9 @@ theory goes that the CoT persists "hologaphically" through the answer itself.
 Each chat turn optionally runs through two model calls instead of one:
 
 1. **Hidden evaluation pass.** The active CoT mode's markdown file (see
-   `conf/cot/`) is wrapped in framing that makes its role explicit — this is
+   `conf/cot/`) is wrapped in framing that makes its role explicit ("this is
    a hidden internal step, the user hasn't seen a reply yet, produce analysis
-   only, don't answer the question yet — and sent as a system message ahead
+   only, don't answer the question yet") and sent as a system message ahead
    of the conversation history. This framing is applied uniformly by the app
    itself, so a mode file doesn't have to spell out "don't answer yet" on its
    own to be effective. The model's response to this call (the "chain of
