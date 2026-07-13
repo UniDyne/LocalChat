@@ -6,6 +6,11 @@ framework). It looks like a fairly ordinary LLM chat app — sessions, a model
 picker, tool use, persisted artifacts — but its reason for existing is a
 different way of getting a local model to reason before it answers.
 
+
+![Screenshot](docs/assets/screenshot.png)
+
+
+
 ## How is this different?
 
 Many local models expose a native "thinking" mode (a `<think>` block the
