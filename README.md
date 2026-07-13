@@ -6,7 +6,7 @@ framework). It looks like a fairly ordinary LLM chat app — sessions, a model
 picker, tool use, persisted artifacts — but its reason for existing is a
 different way of getting a local model to reason before it answers.
 
-## What makes it different
+## How is this different?
 
 Many local models expose a native "thinking" mode (a `<think>` block the
 model fills in before its real answer). It works, but you're stuck with
@@ -19,6 +19,11 @@ letting the model free-associate, you hand it an explicit reasoning framework
 (a checklist, a set of questions, a persona) and force it through that
 framework *before* it's allowed to answer. The framework is just a markdown
 file — swappable per conversation, and easy to write or tune yourself.
+
+Thinking normally persists in the chat history, bloating the context window.
+Here, the CoT is discarded after the current turn. Also, queued tasks do not
+use CoT or thinking at all since the path should already be well-defined. The
+theory goes that the CoT persists "hologaphically" through the answer itself.
 
 ## How the CoT feature works
 
