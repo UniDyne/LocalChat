@@ -23,7 +23,7 @@ LocalChat replaces that with a **directed chain-of-thought pass**: instead of
 letting the model free-associate, you hand it an explicit reasoning framework
 (a checklist, a set of questions, a persona) and force it through that
 framework *before* it's allowed to answer. The framework is just a markdown
-file — swappable per conversation, and easy to write or tune yourself.
+file, swappable per conversation, and easy to write or tune yourself.
 
 Thinking normally persists in the chat history, bloating the context window.
 Here, the CoT is discarded after the current turn. Also, queued tasks do not
@@ -44,8 +44,8 @@ Each chat turn optionally runs through two model calls instead of one:
    thought") is never shown to the user directly, but is persisted and
    visible as a collapsible note in the chat log.
 2. **Final answer pass.** Rather than burying that reasoning in a system
-   message ahead of the whole conversation — where it competes with
-   everything else for the model's attention — it's folded into the *final
+   message ahead of the whole conversation, where it competes with
+   everything else for the model's attention, it's folded into the *final
    user turn itself*, immediately before the model generates its reply:
 
    ```
@@ -63,7 +63,7 @@ Each chat turn optionally runs through two model calls instead of one:
    This puts the reasoning exactly where the model attends to it most
    strongly (right before it starts generating), instead of the start of a
    possibly-long system prompt. The conversation history stored for future
-   turns keeps the plain original prompt — the augmented version is only
+   turns keeps the plain original prompt. The augmented version is only
    used for this one generation call, so the model doesn't see its own past
    reasoning notes replayed back as if the user had written them.
 
@@ -77,41 +77,47 @@ max_tokens: 2048
 You are a Senior Code Architect. Analyze the request. Do NOT write code yet...
 ```
 
-This caps the evaluation pass's response length — useful because a model
+This caps the evaluation pass's response length. That's useful because a model
 will occasionally loop back and redo its own analysis two or three times
-("wait, let me reconsider...") if left unbounded, which just burns tokens for
-no benefit; more complex reasoning frameworks can raise their own limit instead
-of raising it for everyone (see the included `claude-*` examples).
+("wait, let me reconsider...") if left unbounded, which burns tokens for
+no benefit. More complex reasoning frameworks can set their own limit higher
+(see the included `claude-code.md` example).
+
 
 ### CoT modes
 
 The mode selector in the toolbar lists:
 
-- **`none`** — no extra reasoning pass, straight to the answer.
-- **`built-in`** — defers to the model's own native thinking mode
+- **`none`**: no extra reasoning pass, straight to the answer.
+- **`built-in`**: defers to the model's own native thinking mode
   (Ollama's `think` request field), if it has one.
-- Everything else — one entry per `.md` file in `conf/cot/`, named after the
+- Everything else: One entry per `.md` file in `conf/cot/`, named after the
   file. The repo ships with a variety of ready-made frameworks (debugging,
   math, research, business analysis, editing, code architecture, Socratic
-  question-splitting, and more) — add your own by dropping in a new file, no
-  code changes required. Each is picked up live; edits to an existing file
-  take effect on the next turn without restarting the app.
+  question-splitting, and more). Add your own by simply dropping in a new
+  `.md` file, no code changes required. Each is picked up live; edits to
+  an existing file take effect on the next turn without restarting the app.
+  The CoT is per-prompt not per-session. You can switch it between prompts
+  or turn it off entirely.
 
 Queued follow-up tasks (see below) always run with CoT forced to `none`,
-regardless of what's selected in the UI — they're instructions the model
+regardless of what's selected in the UI. They're instructions the model
 already wrote for itself, not a fresh question, so there's nothing left to
-evaluate.
+evaluate. (Besides, it would confuse itself if left on.)
+
+**NOTE:** The included `claude-*` CoT mode examples use steps that were written in
+an attempt to emulate the thinking modes of Claude.
 
 ## Other features
 
 - **Tool use.** The model has access to:
-  - `queue_tasks` — break multi-step work into a list of follow-up prompts
+  - `queue_tasks`: break multi-step work into a list of follow-up prompts
     the app feeds back one at a time, instead of trying to cram everything
     into a single reply.
-  - `create_artifact` / `list_artifacts` / `get_artifact` — persist
+  - `create_artifact` / `list_artifacts` / `get_artifact`: persist
     substantial content (documents, code, notes) outside the chat log,
     browsable in the artifacts sidebar.
-  - `search_skills` / `load_skill` / `create_skill` / `update_skill` — a
+  - `search_skills` / `load_skill` / `create_skill` / `update_skill`: a
     lightweight skill system: markdown files under `conf/skills/` the model
     can discover by name/description, load on demand, and write new ones to
     when it works out something worth remembering for next time.
@@ -120,11 +126,11 @@ evaluate.
   to the executable. Messages can be individually pinned/unpinned to control
   what's included as context on future turns.
 - **Task provenance.** A message auto-dispatched from a queued task list is
-  visually distinct ("Task") and persists that way — a reloaded session can
+  visually distinct ("Task") and persists that way. A reloaded session can
   still tell a queued step apart from something you actually typed.
 - **Live timing.** The status bar counts up while a request is in flight, and
-  every generated message (cot note, tool call, reply) shows how long it took
-  — tracked client-side, not persisted, so it's only visible for the current
+  every generated message (cot note, tool call, reply) shows how long it took,
+  tracked client-side, not persisted, so it's only visible for the current
   session.
 
 ## Project layout
