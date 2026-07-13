@@ -21,6 +21,15 @@ let currentModel = '';
 // no-op instead of a duplicate bubble. Cleared alongside timeline.
 let renderedSeqs = new Set();
 
+// phaseStartedAt marks the start of whatever the model/tool is currently
+// generating, purely client-side (the backend doesn't send timing data).
+// It's reset at three points: when a turn begins, when a "chat:status" event
+// announces the start of a hidden cot pass or a tool dispatch, and right
+// after each cot/tool/assistant message is rendered — so the gap between two
+// consecutive resets is that message's generation time. See
+// renderIncomingMessage and the chat:status handler below.
+let phaseStartedAt = Date.now();
+
 // --- DOM refs ---
 const textarea   = document.querySelector('.chat-textarea');
 const sendBtn    = document.querySelector('.send-btn');
@@ -131,9 +140,10 @@ export function addMessage(entry) {
         // stay visible and expandable.
         div.className = `message msg-meta msg-${rec.role}${rec.pinned ? '' : ' msg-unpinned'}`;
         const label = rec.role === 'cot' ? 'Chain of thought' : `🔧 ${escapeHtml(rec.toolName || 'tool')}`;
+        const elapsed = rec.elapsedMs != null ? ` <span class="msg-elapsed">${formatElapsed(rec.elapsedMs)}</span>` : '';
         div.innerHTML = `
             ${pinButtonHtml(rec.pinned)}
-            <div class="msg-meta-summary">${label}</div>
+            <div class="msg-meta-summary">${label}${elapsed}</div>
             <div class="msg-meta-body" style="display:none"></div>`;
         const summary = div.querySelector('.msg-meta-summary');
         const body = div.querySelector('.msg-meta-body');
@@ -155,6 +165,10 @@ export function addMessage(entry) {
         const metaBits = [rec.model, (rec.mode && rec.mode !== 'none') ? rec.mode : ''].filter(Boolean).join(' · ');
         const avatarLetter = isTask ? 'T' : (rec.role === 'user' ? 'U' : 'A');
         const headerLabel = isTask ? 'Task' : (rec.role === 'user' ? 'You' : 'Assistant');
+        // elapsedMs is only ever set on generated (assistant) messages — a
+        // user turn is typed, not timed. Absent entirely on messages reloaded
+        // from a past session, since it's tracked client-side only.
+        const elapsedBadge = rec.elapsedMs != null ? `<span class="msg-model-badge">${formatElapsed(rec.elapsedMs)}</span>` : '';
         div.innerHTML = `
             ${pinButtonHtml(rec.pinned)}
             <div class="msg-avatar">${avatarLetter}</div>
@@ -163,6 +177,7 @@ export function addMessage(entry) {
                     <span>${headerLabel}</span>
                     <span class="msg-time">${getTimestamp()}</span>
                     ${metaBits ? `<span class="msg-model-badge">${escapeHtml(metaBits)}</span>` : ''}
+                    ${elapsedBadge}
                 </div>
                 <div class="msg-text markdown-body">${md}</div>
             </div>`;
@@ -193,6 +208,13 @@ function renderIncomingMessage(m) {
             pending.mode = m.mode;
             return;
         }
+    } else {
+        // cot/tool/assistant: this message is whatever was generated since
+        // the last phase boundary (turn start, a chat:status event, or the
+        // previous such message) — see phaseStartedAt above.
+        const now = Date.now();
+        m.elapsedMs = now - phaseStartedAt;
+        phaseStartedAt = now;
     }
     addMessage(m);
 }
@@ -211,13 +233,33 @@ EventsOn('artifact:created', (payload) => {
     renderArtifactList();
 });
 
+// formatElapsed renders a millisecond duration the way both the status bar's
+// live timer and each message's generation-time badge want it: sub-second
+// readings are precise enough to feel live, longer ones round to whole
+// seconds so they don't jitter on every tick.
+function formatElapsed(ms) {
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    return `${(ms / 1000).toFixed(1)}s`;
+}
+
+// statusChangedAt marks when the current status text/state was set; the
+// interval below re-renders the elapsed time next to it every tick so the
+// status bar visibly counts up ("Executing tool… 3.2s") instead of just
+// sitting on a static label the whole time an operation is in flight.
+let statusChangedAt = Date.now();
+setInterval(() => {
+    const el = document.querySelector('.status-elapsed');
+    if (el) el.textContent = formatElapsed(Date.now() - statusChangedAt);
+}, 200);
+
 function setStatus(text, state) {
+    statusChangedAt = Date.now();
     // Update the status dot and label.
     if (statusDot) {
         statusDot.className = `status-dot ${state}`;
     }
     if (statusText) {
-        statusText.innerHTML = `<span class="status-dot ${state}"></span>${text}`;
+        statusText.innerHTML = `<span class="status-dot ${state}"></span>${text} <span class="status-elapsed">0ms</span>`;
     }
 }
 
@@ -230,6 +272,19 @@ function setStatus(text, state) {
 // tell a queued step apart from one the user actually typed.
 async function sendAndRender(text, { auto = false } = {}) {
     const queuedByTool = auto ? 'queue_tasks' : '';
+    // The session this turn belongs to — captured now, not re-read after the
+    // round-trip below, since the user can switch sessions while a multi-step
+    // (cot/tool) turn is still running. The live "chat:message" handler
+    // already guards against rendering a backgrounded turn's messages into
+    // whatever session is currently on screen; this fallback loop needs the
+    // same guard, or switching away (and possibly back) mid-turn renders
+    // messages into the wrong session and/or duplicates them once
+    // resetMessages() (called on every session switch) clears the "already
+    // rendered" set those messages were already recorded in.
+    const turnSessionId = getActiveSessionId();
+    // Turn start: the first generated message's elapsed time is measured
+    // from here, unless a chat:status event resets it first.
+    phaseStartedAt = Date.now();
     // Snapshot context before rendering this turn's user bubble — the backend
     // appends `text` itself as the final turn, so history must not include it.
     const priorHistory = computeHistory();
@@ -244,15 +299,17 @@ async function sendAndRender(text, { auto = false } = {}) {
         const result = await sendMessage(text, priorHistory, queuedByTool);
         const msgs = result?.messages || [];
 
-        // Each of these has very likely already been rendered live via the
-        // "chat:message" event as the backend produced it — renderIncomingMessage
-        // dedupes by seq, so this is just a fallback for anything that wasn't
-        // (e.g. an event that arrived after this promise already resolved).
-        for (const m of msgs) {
-            renderIncomingMessage(m);
-        }
+        if (turnSessionId === getActiveSessionId()) {
+            // Each of these has very likely already been rendered live via the
+            // "chat:message" event as the backend produced it — renderIncomingMessage
+            // dedupes by seq, so this is just a fallback for anything that wasn't
+            // (e.g. an event that arrived after this promise already resolved).
+            for (const m of msgs) {
+                renderIncomingMessage(m);
+            }
 
-        maybeAdvanceTaskQueue(msgs);
+            maybeAdvanceTaskQueue(msgs);
+        }
 
         if (!msgs.some(m => m.role === 'assistant')) {
             // Ollama may return empty for certain models — just note it.
@@ -391,6 +448,9 @@ queueStopBtn?.addEventListener('click', stopTaskQueue);
 const THINKING_LABELS = ['Thinking…', 'Cogitating…', 'Pondering…'];
 EventsOn('chat:status', (payload) => {
     if (!payload) return;
+    // Marks the start of a new phase (hidden cot pass or tool dispatch) — the
+    // message it produces will measure its elapsed time from here.
+    phaseStartedAt = Date.now();
     if (payload.state === 'thinking') {
         setStatus(THINKING_LABELS[Math.floor(Math.random() * THINKING_LABELS.length)], 'loading');
     } else if (payload.state === 'tool') {

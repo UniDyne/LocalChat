@@ -244,17 +244,20 @@ func (s *Store) HasMessages(sessionID string) (bool, error) {
 }
 
 // SaveMessage persists a message for the given session and returns its seq.
+// The lock spans both the seq lookup and the insert — releasing it in
+// between would let two concurrent calls read the same MAX(seq)+1 and then
+// both insert, colliding on the (session_id, seq) primary key.
 func (s *Store) SaveMessage(sessionID string, msg NewMessage) (int, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var seq int
 	err := s.db.QueryRow(
 		"SELECT COALESCE(MAX(seq),0)+1 FROM messages WHERE session_id = ?", sessionID,
 	).Scan(&seq)
 	if err != nil {
-		s.mu.Unlock()
 		return 0, fmt.Errorf("get seq: %w", err)
 	}
-	s.mu.Unlock()
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.Exec(

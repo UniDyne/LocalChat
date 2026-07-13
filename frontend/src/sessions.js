@@ -2,6 +2,7 @@ import { createSession, loadSessions, getCurrentSession, loadMessages, renameSes
 import { escapeHtml } from './content'
 import { addMessage, resetMessages, stopTaskQueue } from './app'
 import { renderArtifactList } from './artifacts'
+import { EventsOn } from '../wailsjs/runtime/runtime'
 
 // --- Session Management ---
 let activeSessionId = null;
@@ -13,6 +14,17 @@ export function getActiveSessionId() {
 }
 
 const sessionListEl = document.getElementById('sessionList');
+
+// The backend auto-titles a brand-new session from the user's first message
+// as soon as it's sent (see SendChat's isFirstMessage block in app.go) — well
+// before the model replies, since a long or errored turn shouldn't leave the
+// title stuck on "New Chat" indefinitely. Without this listener the sidebar
+// only picked that up incidentally, whenever something else happened to call
+// renderSessionList() (e.g. sendAndRender's finally block) — so the title
+// visibly lagged behind the backend by the length of the whole turn.
+EventsOn('session:renamed', () => {
+    renderSessionList();
+});
 
 async function initSessions() {
     try {

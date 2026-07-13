@@ -96,6 +96,7 @@
   .message.msg-meta:hover{background:var(--bg-hover)}
   .msg-meta-summary{font-size:11px;color:var(--text-secondary)}
   .msg-meta-body{margin-top:6px;font-size:12px;line-height:1.5;color:var(--text-primary);cursor:default}
+  .msg-elapsed{color:var(--text-muted)}
 
   /* Empty state */
   .empty-state{flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px}
@@ -161,6 +162,7 @@
   .status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:3px}
   .status-dot.ready{background:#a6e7a0}
   .status-dot.loading{background:#ffd166;animation:pulse 1s infinite}
+  .status-elapsed{opacity:.75;font-variant-numeric:tabular-nums}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
   /* Scrollbar */
