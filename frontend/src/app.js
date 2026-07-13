@@ -146,7 +146,10 @@ export function addMessage(entry) {
         });
         wirePinButton(div, rec);
     } else {
-        const isTask = rec.role === 'user' && rec.auto;
+        // rec.auto covers the live/optimistic render for this session; rec.toolName
+        // covers a message reloaded from the DB (auto defaults to false there, but
+        // the persisted tool_name — see SendChat's queuedByTool in app.go — survives).
+        const isTask = rec.role === 'user' && (rec.auto || !!rec.toolName);
         div.className = `message msg-${rec.role}${isTask ? ' msg-task' : ''}${rec.pinned ? '' : ' msg-unpinned'}`;
         const md = renderMarkdown(rec.content);
         const metaBits = [rec.model, (rec.mode && rec.mode !== 'none') ? rec.mode : ''].filter(Boolean).join(' · ');
@@ -221,20 +224,24 @@ function setStatus(text, state) {
 // --- Send message ---
 // Core send+render path shared by the manual send button and the
 // auto-continuing task queue below. `auto` marks the rendered user bubble so
-// queue-driven steps are visually distinguishable from hand-typed ones.
+// queue-driven steps are visually distinguishable from hand-typed ones, and
+// is also sent to the backend as queuedByTool so it's persisted on the row
+// (see SendChat's doc in app.go) — that's what lets a reloaded session still
+// tell a queued step apart from one the user actually typed.
 async function sendAndRender(text, { auto = false } = {}) {
+    const queuedByTool = auto ? 'queue_tasks' : '';
     // Snapshot context before rendering this turn's user bubble — the backend
     // appends `text` itself as the final turn, so history must not include it.
     const priorHistory = computeHistory();
     // Render optimistically for instant feedback; reconciled in place (see
     // renderIncomingMessage) with its real seq/model/mode once either the live
     // "chat:message" event or the round-trip below delivers the persisted row.
-    addMessage({ role: 'user', content: text, pinned: true, auto });
+    addMessage({ role: 'user', content: text, pinned: true, auto, toolName: queuedByTool });
 
     setStatus('Sending…', 'loading');
 
     try {
-        const result = await sendMessage(text, priorHistory);
+        const result = await sendMessage(text, priorHistory, queuedByTool);
         const msgs = result?.messages || [];
 
         // Each of these has very likely already been rendered live via the

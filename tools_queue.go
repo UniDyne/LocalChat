@@ -59,7 +59,7 @@ func (a *App) queueTasksTool() ToolDef {
 			if len(tasks) != 1 {
 				noun = "steps"
 			}
-			return fmt.Sprintf("Queued %d follow-up %s. They'll run automatically, one at a time, after this turn ends — do not attempt them yourself.", len(tasks), noun), nil
+			return fmt.Sprintf("Queued %d follow-up %s. They'll run automatically, one at a time.", len(tasks), noun), nil
 		},
 	}
 }

@@ -85,7 +85,7 @@
   .msg-code{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:6px 8px;font-family:var(--font-mono);font-size:11px;margin-top:4px;overflow-x:auto}
 
   /* Pin/unpin — hover-revealed on every message, dims unpinned ones without hiding them */
-  .msg-pin-btn{position:absolute;top:4px;right:4px;opacity:0;background:none;border:none;cursor:pointer;font-size:11px;line-height:1;padding:2px;border-radius:var(--radius);filter:grayscale(1)}
+  .msg-pin-btn{position:absolute;top:4px;right:4px;opacity:0;background:none;border:none;cursor:pointer;font-size:11px;line-height:1;padding:2px;border-radius:var(--radius);filter:grayscale(1);color:white}
   .message:hover .msg-pin-btn{opacity:.85}
   .msg-pin-btn:hover{opacity:1 !important;filter:none}
   .message.msg-unpinned{opacity:.55}

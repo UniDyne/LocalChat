@@ -54,11 +54,14 @@ export async function setCotMode(name) {
  * zero or more "tool" calls, and the final "assistant" reply.
  * @param {string} text - The user's message.
  * @param {{role:string,content:string}[]} [history=[]] - Prior pinned messages.
+ * @param {string} [queuedByTool=''] - Name of the tool that queued this message
+ *   (currently always 'queue_tasks'), or '' if the user typed it themselves.
+ *   Forces cot mode to 'none' for this turn and is persisted on the row.
  * @returns {{messages: {seq:number,role:string,content:string,model:string,mode:string,pinned:boolean,toolName?:string,toolArgs?:string,toolResult?:string}[]}}
  */
-export async function sendMessage(text, history = []) {
+export async function sendMessage(text, history = [], queuedByTool = '') {
     if (!text || !text.trim()) throw new Error('Empty message');
-    return await SendChat(text, history);
+    return await SendChat(text, history, queuedByTool);
 }
 
 // --- Session management ---

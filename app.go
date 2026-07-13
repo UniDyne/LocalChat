@@ -360,12 +360,23 @@ type ChatTurnResult struct {
 // every message persisted this turn (user, optional cot note, optional tool
 // calls, assistant).
 //
+// queuedByTool is empty for a message the user typed themselves, or the name
+// of the tool that queued it (currently always "queue_tasks") when the
+// frontend is auto-dispatching one step of a queued task list. Queued tasks
+// always run as if the cot mode were "none" regardless of the mode currently
+// selected in the UI — they're follow-up instructions the model wrote for
+// itself, not a fresh user question, so there's nothing left to evaluate with
+// a cot pass. This is a per-call override; it doesn't touch a.mode, so the
+// UI's mode selector and any hand-typed messages are unaffected. The override
+// (and queuedByTool itself) is persisted on the row so a reloaded session can
+// still tell a queued step apart from one the user actually typed.
+//
 // For a custom (file-based) cot mode, this runs two model calls: a hidden evaluation
 // pass using the cot prompt as a system message, then a final answer pass that folds
 // the evaluation back in as a hidden note. The cot note and any tool calls are
 // persisted as their own unpinned message rows (visible collapsed in the UI, but
 // excluded from context on future turns unless the user pins them).
-func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, error) {
+func (a *App) SendChat(userMsg string, history []ChatMessage, queuedByTool string) (ChatTurnResult, error) {
 	if a.cli == nil {
 		return ChatTurnResult{}, fmt.Errorf("Ollama client not initialized")
 	}
@@ -379,6 +390,14 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 		slog.Warn("failed to check session message count", "session", sessionID, "error", err)
 	}
 	isFirstMessage := err == nil && !hadMessages
+
+	// mode is the effective cot mode for this turn — normally the UI's
+	// current selection, but forced to "none" for a queued task regardless
+	// of what's selected (see queuedByTool doc above).
+	mode := a.mode
+	if queuedByTool != "" {
+		mode = CotModeNone
+	}
 
 	baseMsgs := make([]api.Message, 0, len(history)+1)
 	for _, h := range history {
@@ -407,7 +426,7 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 	// produced (not batched until the turn succeeds) so that a turn cut short
 	// by an error — e.g. exceeding maxToolIterations — still leaves everything
 	// that happened so far in the session.
-	turnMsgs := []ChatTurnMessage{a.persist(sessionID, store.NewMessage{Role: "user", Content: userMsg, Model: a.model, Mode: a.mode, Pinned: true})}
+	turnMsgs := []ChatTurnMessage{a.persist(sessionID, store.NewMessage{Role: "user", Content: userMsg, Model: a.model, Mode: mode, Pinned: true, ToolName: queuedByTool})}
 
 	// Title the session from the user's opening message as soon as it's in,
 	// not after the model replies — a long tool-calling/queued-task chain, or
@@ -423,9 +442,9 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 	}
 
 	msgs := baseMsgs
-	if a.mode != CotModeNone && a.mode != CotModeBuiltIn && a.mode != "" {
-		if cot, err := loadCotConfig(a.mode); err != nil {
-			slog.Warn("failed to load cot prompt", "mode", a.mode, "error", err)
+	if mode != CotModeNone && mode != CotModeBuiltIn && mode != "" {
+		if cot, err := loadCotConfig(mode); err != nil {
+			slog.Warn("failed to load cot prompt", "mode", mode, "error", err)
 		} else {
 			evalParts := append(append([]string{}, systemParts...), fmt.Sprintf(cotEvalWrapper, cot.Prompt))
 			evalMsgs := append([]api.Message{{Role: "system", Content: strings.Join(evalParts, "\n\n")}}, baseMsgs...)
@@ -433,9 +452,9 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 			wailsruntime.EventsEmit(a.ctx, "chat:status", map[string]any{"state": "thinking"})
 			evaluation, err := a.chatOnce(evalMsgs, api.ThinkValue{Value: false}, map[string]any{"num_predict": cot.MaxTokens})
 			if err != nil {
-				slog.Warn("cot evaluation failed", "mode", a.mode, "error", err)
+				slog.Warn("cot evaluation failed", "mode", mode, "error", err)
 			} else {
-				turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{Role: "cot", Content: evaluation, Model: a.model, Mode: a.mode, Pinned: false}))
+				turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{Role: "cot", Content: evaluation, Model: a.model, Mode: mode, Pinned: false}))
 
 				// Fold the evaluation into the final user turn itself (not the
 				// system message, and not the persisted/history copy of the
@@ -452,8 +471,8 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 		msgs = append([]api.Message{{Role: "system", Content: strings.Join(systemParts, "\n\n")}}, msgs...)
 	}
 
-	think := api.ThinkValue{Value: a.mode == CotModeBuiltIn}
-	fullReply, toolTurnMsgs, err := a.chatWithTools(sessionID, msgs, think)
+	think := api.ThinkValue{Value: mode == CotModeBuiltIn}
+	fullReply, toolTurnMsgs, err := a.chatWithTools(sessionID, msgs, think, mode)
 	turnMsgs = append(turnMsgs, toolTurnMsgs...)
 	if err != nil {
 		// Everything up to the failure (user message, cot note, dispatched tool
@@ -461,7 +480,7 @@ func (a *App) SendChat(userMsg string, history []ChatMessage) (ChatTurnResult, e
 		// chatWithTools, so the caller still gets a full record of the turn.
 		return ChatTurnResult{Messages: turnMsgs}, fmt.Errorf("chat request failed: %w", err)
 	}
-	turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{Role: "assistant", Content: fullReply, Model: a.model, Mode: a.mode, Pinned: true}))
+	turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{Role: "assistant", Content: fullReply, Model: a.model, Mode: mode, Pinned: true}))
 
 	return ChatTurnResult{Messages: turnMsgs}, nil
 }
@@ -538,7 +557,7 @@ const maxToolIterations = 16
 // and attempt those same tasks itself before the turn ends. Ending the turn
 // right there removes that possibility structurally rather than relying on
 // the model to respect the tool description's wording.
-func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.ThinkValue) (string, []ChatTurnMessage, error) {
+func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.ThinkValue, mode string) (string, []ChatTurnMessage, error) {
 	tools := toAPITools(a.toolRegistry())
 	var turnMsgs []ChatTurnMessage
 
@@ -573,7 +592,7 @@ func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.Thin
 				slog.Warn("failed to marshal tool arguments for persistence", "tool", tc.Function.Name, "error", jerr)
 			}
 			turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{
-				Role: "tool", Content: tc.Function.Name, Model: a.model, Mode: a.mode, Pinned: false,
+				Role: "tool", Content: tc.Function.Name, Model: a.model, Mode: mode, Pinned: false,
 				ToolName: tc.Function.Name, ToolArgs: string(argsJSON), ToolResult: result,
 			}))
 		}

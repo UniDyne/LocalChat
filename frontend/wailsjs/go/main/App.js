@@ -66,8 +66,8 @@ export function SaveMessage(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveMessage'](arg1, arg2, arg3);
 }
 
-export function SendChat(arg1, arg2) {
-  return window['go']['main']['App']['SendChat'](arg1, arg2);
+export function SendChat(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendChat'](arg1, arg2, arg3);
 }
 
 export function SetCotMode(arg1) {
