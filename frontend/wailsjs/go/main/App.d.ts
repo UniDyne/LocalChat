@@ -4,6 +4,8 @@ import {store} from '../models';
 import {skill} from '../models';
 import {main} from '../models';
 
+export function ClearDirectory():Promise<void>;
+
 export function CreateArtifactManual(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function CreateSession():Promise<string>;
@@ -26,6 +28,8 @@ export function GetSessions():Promise<Array<store.Session>>;
 
 export function GetSkillBody(arg1:string):Promise<string>;
 
+export function GetWorkDir():Promise<string>;
+
 export function ListCotModes():Promise<Array<string>>;
 
 export function ListModels():Promise<Array<string>>;
@@ -35,6 +39,8 @@ export function ListSkills():Promise<Array<skill.Meta>>;
 export function RenameSession(arg1:string,arg2:string):Promise<void>;
 
 export function SaveMessage(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function SelectDirectory():Promise<string>;
 
 export function SendChat(arg1:string,arg2:Array<main.ChatMessage>,arg3:string):Promise<main.ChatTurnResult>;
 

@@ -3,6 +3,7 @@ import { ListCotModes, GetCotMode, SetCotMode } from '../wailsjs/go/main/App';
 import { CreateSession, GetCurrentSession, GetSessions, SwitchSession, DeleteSession, RenameSession, GetMessages } from '../wailsjs/go/main/App';
 import { GetArtifacts, GetArtifactContent, CreateArtifactManual } from '../wailsjs/go/main/App';
 import { SetMessagePinned } from '../wailsjs/go/main/App';
+import { SelectDirectory, ClearDirectory, GetWorkDir } from '../wailsjs/go/main/App';
 
 /**
  * Return an array of available model names from the configured Ollama server.
@@ -46,6 +47,32 @@ export async function getCotMode() {
  */
 export async function setCotMode(name) {
     await SetCotMode(name);
+}
+
+// --- File tools directory ---
+
+/**
+ * Open a native directory picker and, if the user chooses one, make it the
+ * sandbox root for the file tools (list/read/write/update), enabling them.
+ * Returns the resulting selected directory ("" if none is selected) — if the
+ * user cancels the dialog, this is whatever was already selected before.
+ */
+export async function selectDirectory() {
+    return await SelectDirectory();
+}
+
+/**
+ * Deselect the current directory, disabling the file tools.
+ */
+export async function clearDirectory() {
+    await ClearDirectory();
+}
+
+/**
+ * Return the currently selected directory, or "" if none (file tools disabled).
+ */
+export async function getWorkDir() {
+    return await GetWorkDir();
 }
 
 /**

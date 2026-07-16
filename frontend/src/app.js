@@ -2,6 +2,7 @@ import './style.css';
 import './app.css';
 import { sendMessage, setModel, getModel, listModels, getCurrentSession, setMessagePinned } from './api';
 import { listCotModes, getCotMode, setCotMode } from './api';
+import { selectDirectory, clearDirectory, getWorkDir } from './api';
 import { renderSessionList, getActiveSessionId } from './sessions'
 import { renderArtifactList } from './artifacts'
 import { escapeHtml, renderMarkdown, renderHighlighted } from './content'
@@ -35,6 +36,8 @@ const textarea   = document.querySelector('.chat-textarea');
 const sendBtn    = document.querySelector('.send-btn');
 const modelSel   = document.querySelector('select.dd-btn');
 const modeSel    = document.querySelector('select.mode-sel');
+const dirBtn      = document.getElementById('dirBtn');
+const dirClearBtn = document.getElementById('dirClearBtn');
 const statusText = document.querySelector('.status-left span:last-child'); // "Ready" text + dot
 const statusDot  = document.querySelector('.status-dot');
 const statusBarModel = document.querySelector('.status-right > span:first-child'); // shows current model name
@@ -594,9 +597,50 @@ modeSel?.addEventListener('change', async () => {
     }
 });
 
+// --- Directory selector (enables/disables the file tools) ---
+// Shows the last path segment as a label; the button itself doubles as the
+// "select" affordance whether or not a directory is already active.
+function updateDirButton(dir) {
+    if (!dirBtn) return;
+    const base = dir ? dir.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : '';
+    dirBtn.textContent = dir ? base : 'None';
+    dirBtn.title = dir ? `File tools enabled on: ${dir}` : 'Select a directory to enable file tools';
+    dirBtn.classList.toggle('dir-active', !!dir);
+    if (dirClearBtn) dirClearBtn.style.display = dir ? '' : 'none';
+}
+
+async function loadWorkDir() {
+    if (!dirBtn) return;
+    try {
+        updateDirButton(await getWorkDir());
+    } catch (err) {
+        console.warn('Could not load file tool directory:', err.message);
+    }
+}
+
+dirBtn?.addEventListener('click', async () => {
+    try {
+        const dir = await selectDirectory();
+        updateDirButton(dir);
+    } catch (err) {
+        console.error('Failed to select directory:', err);
+    }
+});
+
+dirClearBtn?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try {
+        await clearDirectory();
+        updateDirButton('');
+    } catch (err) {
+        console.error('Failed to clear directory:', err);
+    }
+});
+
 // Re-populate on startup and whenever the selector loses focus (covers reconnects).
 loadModels();
 loadCotModes();
+loadWorkDir();
 
 // Clear demo data 
 if (chatLog.querySelector('.message')) {

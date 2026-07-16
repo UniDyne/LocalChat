@@ -17,9 +17,12 @@ type ToolDef struct {
 	Handler     func(a *App, args map[string]any) (string, error)
 }
 
-// toolRegistry returns every tool available to the model.
+// toolRegistry returns every tool available to the model. The file tools
+// (list/read/write/update) are only included once the user has selected a
+// directory in the UI — see App.hasWorkDir — so the model can't see or call
+// them at all while they're disabled, rather than seeing them fail.
 func (a *App) toolRegistry() []ToolDef {
-	return []ToolDef{
+	tools := []ToolDef{
 		a.searchSkillsTool(),
 		a.loadSkillTool(),
 		a.createSkillTool(),
@@ -29,6 +32,10 @@ func (a *App) toolRegistry() []ToolDef {
 		a.getArtifactTool(),
 		a.queueTasksTool(),
 	}
+	if a.hasWorkDir() {
+		tools = append(tools, a.listFilesTool(), a.readFileTool(), a.writeFileTool(), a.updateFileTool())
+	}
+	return tools
 }
 
 func (a *App) findTool(name string) (ToolDef, bool) {

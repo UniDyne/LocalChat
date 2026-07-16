@@ -69,6 +69,15 @@ type App struct {
 	model string
 	mode  string
 	sess  *store.Store
+
+	// workDirMu guards workDir, which is read from the tool-calling loop
+	// (toolRegistry, on every chat turn) and written from the frontend's
+	// directory picker — two different goroutines under Wails' bindings.
+	workDirMu sync.RWMutex
+	// workDir is the directory the file tools (list/read/write/update) are
+	// sandboxed to. Empty means no directory is selected, which disables the
+	// file tools entirely — see hasWorkDir/toolRegistry.
+	workDir string
 }
 
 // NewApp creates a new App with defaults.
@@ -136,6 +145,57 @@ func (a *App) ListModels() ([]string, error) {
 		names = append(names, m.Name)
 	}
 	return names, nil
+}
+
+// workDirSnapshot returns the currently selected directory (empty if none),
+// safe for concurrent use.
+func (a *App) workDirSnapshot() string {
+	a.workDirMu.RLock()
+	defer a.workDirMu.RUnlock()
+	return a.workDir
+}
+
+// hasWorkDir reports whether a directory is currently selected, i.e. whether
+// the file tools should be advertised to the model — see toolRegistry.
+func (a *App) hasWorkDir() bool {
+	return a.workDirSnapshot() != ""
+}
+
+// GetWorkDir returns the currently selected directory for the file tools, or
+// "" if none is selected (file tools disabled).
+func (a *App) GetWorkDir() string {
+	return a.workDirSnapshot()
+}
+
+// SelectDirectory opens a native directory picker and, if the user chooses a
+// directory, makes it the sandbox root for the file tools (enabling them) and
+// returns the chosen path. If the user cancels the dialog, the previous
+// selection (if any) is left untouched and its path is returned unchanged.
+func (a *App) SelectDirectory() (string, error) {
+	dir, err := wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Select a directory to enable file tools",
+	})
+	if err != nil {
+		return "", fmt.Errorf("open directory dialog: %w", err)
+	}
+	if dir == "" {
+		return a.workDirSnapshot(), nil
+	}
+
+	a.workDirMu.Lock()
+	a.workDir = dir
+	a.workDirMu.Unlock()
+	slog.Info("file tool directory selected", "dir", dir)
+	return dir, nil
+}
+
+// ClearDirectory deselects the current directory, disabling the file tools
+// until another one is chosen via SelectDirectory.
+func (a *App) ClearDirectory() {
+	a.workDirMu.Lock()
+	a.workDir = ""
+	a.workDirMu.Unlock()
+	slog.Info("file tool directory cleared")
 }
 
 // confDir returns the path to the "conf" directory (holding SYSTEM.md, cot/,
@@ -313,21 +373,6 @@ Apply this framework to the user's message that follows:
 ---
 
 Produce your analysis now, in a single pass. Do not answer the user's question or request directly — stop at the analysis. Write it once and commit to it: do not restart, redo, or re-run the framework from the top to second-guess or correct an earlier step — if you notice a mistake, correct it in place and move on. Keep it tight — bullet points over prose, no repeating a point already made in an earlier step.`
-
-// cotAnswerWrapper folds the hidden evaluation back in as part of the final
-// user turn, rather than the system message. Instructions placed in a system
-// message ahead of the whole conversation history compete with everything
-// else for the model's attention ("lost in the middle"); folding the notes
-// into the last user turn puts them exactly where the model attends most
-// strongly, right before it starts generating the reply.
-const cotAnswerWrapper = `%s
-
----
-The section above is the prompt to answer. Below are your own hidden internal reasoning notes on it, produced in a prior step the user never saw — use them to inform your answer, but do not mention, quote, or refer to them ("notes", "analysis", etc.) in your reply. Just answer the prompt directly, as if this were the only step.
-
-If the notes describe something that spans multiple distinct steps, or the full deliverable would be long (e.g. a multi-file app, a long document), do not attempt to fit the whole thing into this one reply — use queue_tasks to hand the remaining steps to yourself one at a time, and create_artifact for the actual deliverable content, per your operating instructions. Only write the full thing directly here if it's genuinely short.
-
-%s`
 
 // cotAnswerWrapper folds the hidden evaluation back in as part of the final
 // user turn, rather than the system message. Instructions placed in a system
