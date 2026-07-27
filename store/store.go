@@ -47,6 +47,15 @@ type NewMessage struct {
 	ToolResult  string
 }
 
+// PlanStep is one step of a session's plan (see the manage_plan tool).
+// Status is one of "pending", "in_progress", "completed", "failed".
+type PlanStep struct {
+	Seq       int    `json:"seq"`
+	Content   string `json:"content"`
+	Status    string `json:"status"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
 // ArtifactMeta is a lightweight artifact listing (no content) for sidebar display.
 type ArtifactMeta struct {
 	ID          string `json:"id"`
@@ -123,6 +132,14 @@ CREATE TABLE IF NOT EXISTS artifacts (
 	content      TEXT NOT NULL,
 	content_type TEXT NOT NULL DEFAULT 'text',
 	created_at   TIMESTAMP NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plan_steps (
+	session_id TEXT NOT NULL,
+	seq        INTEGER NOT NULL,
+	content    TEXT NOT NULL,
+	status     TEXT NOT NULL DEFAULT 'pending',
+	updated_at TIMESTAMP NOT NULL,
+	PRIMARY KEY (session_id, seq)
 );`
 
 	if _, err := db.Exec(createSQL); err != nil {
@@ -216,6 +233,9 @@ func (s *Store) DeleteSession(id string) error {
 
 	if _, err := tx.Exec("DELETE FROM messages WHERE session_id = ?", id); err != nil {
 		return fmt.Errorf("delete messages: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM plan_steps WHERE session_id = ?", id); err != nil {
+		return fmt.Errorf("delete plan: %w", err)
 	}
 	if _, err := tx.Exec("DELETE FROM sessions WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete session: %w", err)
@@ -396,6 +416,67 @@ func (s *Store) GetArtifact(id string) (Artifact, error) {
 		return Artifact{}, fmt.Errorf("get artifact %s: %w", id, err)
 	}
 	return a, nil
+}
+
+// SetPlan replaces the entire plan for a session with the given steps.
+// manage_plan is full-replace semantics (the model always sends the complete
+// list), but this upserts rather than deleting-then-reinserting every row:
+// DuckDB's ART index (used for the (session_id, seq) primary key) has a known
+// limitation where deleting and reinserting the same key within a single
+// transaction can raise a spurious constraint violation — see the "known
+// index limitations" section of https://duckdb.org/docs/sql/indexes — which
+// is exactly what a plain clear-and-reinsert hit here in practice, since a
+// step's (session_id, seq) is usually unchanged between calls. Only seqs that
+// no longer exist in the new, shorter plan are actually deleted, and those
+// are by definition disjoint from the seqs just upserted, so no key is ever
+// deleted and reinserted in the same transaction.
+func (s *Store) SetPlan(sessionID string, steps []PlanStep) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, step := range steps {
+		if _, err := tx.Exec(
+			`INSERT INTO plan_steps (session_id, seq, content, status, updated_at) VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT (session_id, seq) DO UPDATE SET
+			   content = excluded.content, status = excluded.status, updated_at = excluded.updated_at`,
+			sessionID, step.Seq, step.Content, step.Status, now,
+		); err != nil {
+			return fmt.Errorf("upsert plan step: %w", err)
+		}
+	}
+
+	if _, err := tx.Exec("DELETE FROM plan_steps WHERE session_id = ? AND seq > ?", sessionID, len(steps)); err != nil {
+		return fmt.Errorf("trim plan: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// GetPlan returns the current plan for a session in step order — empty if no
+// plan has been created yet.
+func (s *Store) GetPlan(sessionID string) ([]PlanStep, error) {
+	rows, err := s.db.Query(
+		"SELECT seq, content, status, updated_at FROM plan_steps WHERE session_id = ? ORDER BY seq",
+		sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query plan: %w", err)
+	}
+	defer rows.Close()
+
+	steps := make([]PlanStep, 0)
+	for rows.Next() {
+		var p PlanStep
+		if err := rows.Scan(&p.Seq, &p.Content, &p.Status, &p.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan plan step: %w", err)
+		}
+		steps = append(steps, p)
+	}
+	return steps, nil
 }
 
 // createSessionInternal inserts a row into the sessions table and returns its ID.

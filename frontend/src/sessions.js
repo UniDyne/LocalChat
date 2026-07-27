@@ -1,7 +1,8 @@
 import { createSession, loadSessions, getCurrentSession, loadMessages, renameSession, switchSession, deleteSession } from './api';
 import { escapeHtml } from './content'
-import { addMessage, resetMessages, stopTaskQueue } from './app'
+import { addMessage, resetMessages, stopPlanRun } from './app'
 import { renderArtifactList } from './artifacts'
+import { renderPlanList } from './plan'
 import { EventsOn } from '../wailsjs/runtime/runtime'
 
 // --- Session Management ---
@@ -109,15 +110,16 @@ async function loadSessionMessages(sessionId) {
 
 async function doSwitchSession(id) {
     if (!id || id === activeSessionId) return;
-    // A running task queue targets the currently-active session — stop it
-    // before switching so an auto-fired step can't land in the wrong session.
-    stopTaskQueue();
+    // A running plan targets the currently-active session — stop it before
+    // switching so an auto-fired step can't land in the wrong session.
+    stopPlanRun();
     try {
         await switchSession(id);
         activeSessionId = id;
         await loadSessionMessages(id);
         await renderSessionList(); // update highlight
         await renderArtifactList();
+        await renderPlanList();
     } catch (err) { console.error('switch session', err); }
 }
 
@@ -127,7 +129,7 @@ async function renameSessionInList(id, title) {
 }
 
 async function doDeleteSession(id) {
-    stopTaskQueue();
+    stopPlanRun();
     await deleteSession(id);
     // If the deleted session was active, the backend auto-creates a replacement.
     activeSessionId = await getCurrentSession();
@@ -136,11 +138,12 @@ async function doDeleteSession(id) {
     await renderSessionList();
     await loadSessionMessages(activeSessionId);
     await renderArtifactList();
+    await renderPlanList();
 }
 
 // New session button handler (exposed to global for onclick)
 window.doNewSession = async function () {
-    stopTaskQueue();
+    stopPlanRun();
     try {
         const newId = await createSession();
         activeSessionId = newId;
@@ -148,6 +151,7 @@ window.doNewSession = async function () {
         resetMessages();
         await renderSessionList();
         await renderArtifactList();
+        await renderPlanList();
     } catch (err) { console.error('new session', err); }
 };
 

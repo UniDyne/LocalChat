@@ -1,22 +1,9 @@
-import { getArtifacts, getArtifactContent, getCurrentSession } from './api';
+import { getArtifacts, getArtifactContent, getCurrentSession, saveArtifact } from './api';
 import { escapeHtml, renderMarkdown, renderHighlighted } from './content';
 
 // --- Artifact list (right sidebar) ---
 
 const artifactListEl = document.getElementById('artifactList');
-
-const EXT_BY_TYPE = {
-    markdown: 'md', python: 'py', go: 'go', javascript: 'js', typescript: 'ts',
-    json: 'json', yaml: 'yaml', html: 'html', css: 'css', sql: 'sql', text: 'txt',
-};
-
-function extForType(contentType) {
-    return EXT_BY_TYPE[contentType] || 'txt';
-}
-
-function sanitizeFilename(title) {
-    return (title || 'artifact').trim().replace(/[\\/:*?"<>|]+/g, '_') || 'artifact';
-}
 
 // Render the artifact list for the currently active session.
 export async function renderArtifactList() {
@@ -86,21 +73,22 @@ async function openArtifactPreview(id) {
 
     overlay.querySelector('.artifact-close-btn').addEventListener('click', () => overlay.remove());
     overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-    overlay.querySelector('.artifact-download-btn').addEventListener('click', () => downloadArtifact(artifact));
+    overlay.querySelector('.artifact-download-btn').addEventListener('click', () => downloadArtifact(artifact.id));
 
     document.body.appendChild(overlay);
 }
 
-function downloadArtifact(artifact) {
-    const blob = new Blob([artifact.content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${sanitizeFilename(artifact.title)}.${extForType(artifact.contentType)}`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+// Opens a native save dialog (via the backend's SaveArtifact, which also
+// picks the default filename from the artifact's own title/content type) and
+// writes the artifact to wherever the user chooses. A blob/<a download> URL
+// doesn't reliably trigger a save inside Wails' embedded webview the way it
+// would in a full browser, so this goes through the backend instead.
+async function downloadArtifact(id) {
+    try {
+        await saveArtifact(id);
+    } catch (err) {
+        console.error('saveArtifact', err);
+    }
 }
 
 renderArtifactList();

@@ -98,10 +98,11 @@
 
     </div>
 
-    <!-- Task queue progress banner (shown while an auto-continuing run is active) -->
-    <div class="queue-banner" id="queueBanner" style="display:none">
-      <span class="queue-banner-text"></span>
-      <button class="queue-stop-btn" id="queueStopBtn">Stop</button>
+    <!-- Plan progress banner (shown while an auto-continuing plan is active or paused) -->
+    <div class="plan-banner" id="planBanner" style="display:none">
+      <span class="plan-banner-text"></span>
+      <button class="plan-resume-btn" id="planResumeBtn" style="display:none">Resume</button>
+      <button class="plan-stop-btn" id="planStopBtn">Stop</button>
     </div>
 
     <!-- Input Area -->
@@ -127,7 +128,20 @@
 
   <!-- Right Sidebar -->
   <aside class="sidebar-right" id="sidebarRight">
-    <div id="artifactList"></div>
+
+    <div class="sidebar-tabs">
+      <button class="tab-btn active" onclick="switchTab('artifacts',this)">Artifacts</button>
+      <button class="tab-btn" onclick="switchTab('plan',this)">Plan</button>
+    </div>
+
+    <div class="sidebar-content visible" id="tab-artifacts">
+      <div id="artifactList"></div>
+    </div>
+
+    <div class="sidebar-content" id="tab-plan">
+      <div id="planList"></div>
+    </div>
+
   </aside>
 
 </div>
@@ -148,15 +162,20 @@
 function toggleLeft(){document.getElementById('sidebarLeft').classList.toggle('expanded')}
 function toggleRight(){document.getElementById('sidebarRight').classList.toggle('expanded')}
 function switchTab(tab,el){
-  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  // Scoped to the enclosing sidebar (left or right) so switching tabs in one
+  // pane doesn't deactivate the other pane's tabs — they share the same
+  // .tab-btn/.sidebar-content classes but are independent tab groups.
+  const pane = el.closest('aside');
+  pane.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
   el.classList.add('active');
-  document.querySelectorAll('.sidebar-content').forEach(c=>c.classList.remove('visible'));
-  document.getElementById('tab-'+tab).classList.add('visible');
+  pane.querySelectorAll('.sidebar-content').forEach(c=>c.classList.remove('visible'));
+  pane.querySelector('#tab-'+tab).classList.add('visible');
 }
 // Auto-resize textarea
 document.querySelector('.chat-textarea').addEventListener('input',function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px'});
 </script>
 <script type="module" src="./src/app.js"></script>
 <script type="module" src="./src/artifacts.js"></script>
+<script type="module" src="./src/plan.js"></script>
 </body>
 </html>

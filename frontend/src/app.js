@@ -5,6 +5,7 @@ import { listCotModes, getCotMode, setCotMode } from './api';
 import { selectDirectory, clearDirectory, getWorkDir } from './api';
 import { renderSessionList, getActiveSessionId } from './sessions'
 import { renderArtifactList } from './artifacts'
+import { renderPlanList } from './plan'
 import { escapeHtml, renderMarkdown, renderHighlighted } from './content'
 import { EventsOn } from '../wailsjs/runtime/runtime'
 
@@ -26,10 +27,21 @@ let renderedSeqs = new Set();
 // generating, purely client-side (the backend doesn't send timing data).
 // It's reset at three points: when a turn begins, when a "chat:status" event
 // announces the start of a hidden cot pass or a tool dispatch, and right
-// after each cot/tool/assistant message is rendered — so the gap between two
-// consecutive resets is that message's generation time. See
-// renderIncomingMessage and the chat:status handler below.
+// after each cot/tool message is rendered — so the gap between two
+// consecutive resets is that step's own generation/execution time. See
+// renderIncomingMessage and the chat:status handler below. Deliberately NOT
+// used for the final assistant message (see turnStartedAt) — a turn that
+// goes through several tool rounds resets this on every one of them, so by
+// the time the assistant's reply arrives it only reflects the last round's
+// duration, not the whole turn's.
 let phaseStartedAt = Date.now();
+
+// turnStartedAt marks when the current turn began and, unlike phaseStartedAt,
+// is never reset mid-turn — it's what the final assistant message's elapsed
+// badge is measured against, so a multi-round tool-calling turn shows the
+// model's true end-to-end time rather than just the gap since the last tool
+// call finished.
+let turnStartedAt = Date.now();
 
 // --- DOM refs ---
 const textarea   = document.querySelector('.chat-textarea');
@@ -42,8 +54,9 @@ const statusText = document.querySelector('.status-left span:last-child'); // "R
 const statusDot  = document.querySelector('.status-dot');
 const statusBarModel = document.querySelector('.status-right > span:first-child'); // shows current model name
 const statusBarMode  = document.getElementById('statusMode'); // shows current cot mode
-const queueBanner    = document.getElementById('queueBanner');
-const queueStopBtn   = document.getElementById('queueStopBtn');
+const planBanner     = document.getElementById('planBanner');
+const planStopBtn    = document.getElementById('planStopBtn');
+const planResumeBtn  = document.getElementById('planResumeBtn');
 
 // --- Helpers ---
 function getTimestamp() {
@@ -211,8 +224,14 @@ function renderIncomingMessage(m) {
             pending.mode = m.mode;
             return;
         }
+    } else if (m.role === 'assistant') {
+        // The final reply's badge is the whole turn's time (see
+        // turnStartedAt above), not just the gap since the last phase
+        // boundary — a turn that went through several tool rounds would
+        // otherwise only show the last round's duration.
+        m.elapsedMs = Date.now() - turnStartedAt;
     } else {
-        // cot/tool/assistant: this message is whatever was generated since
+        // cot/tool: this message is whatever was generated/executed since
         // the last phase boundary (turn start, a chat:status event, or the
         // previous such message) — see phaseStartedAt above.
         const now = Date.now();
@@ -223,8 +242,8 @@ function renderIncomingMessage(m) {
 }
 
 // Live backend events: a message is pushed here as soon as it's persisted
-// (see a.persist in app.go), and an artifact as soon as it's created — both
-// well before the RPC for the whole turn returns.
+// (see a.persist in app.go), and an artifact/plan update as soon as it
+// happens — both well before the RPC for the whole turn returns.
 EventsOn('chat:message', (payload) => {
     if (!payload?.message) return;
     if (payload.sessionId !== getActiveSessionId()) return;
@@ -234,6 +253,11 @@ EventsOn('artifact:created', (payload) => {
     if (!payload) return;
     if (payload.sessionId !== getActiveSessionId()) return;
     renderArtifactList();
+});
+EventsOn('plan:updated', (payload) => {
+    if (!payload) return;
+    if (payload.sessionId !== getActiveSessionId()) return;
+    renderPlanList();
 });
 
 // formatElapsed renders a millisecond duration the way both the status bar's
@@ -268,13 +292,22 @@ function setStatus(text, state) {
 
 // --- Send message ---
 // Core send+render path shared by the manual send button and the
-// auto-continuing task queue below. `auto` marks the rendered user bubble so
-// queue-driven steps are visually distinguishable from hand-typed ones, and
+// auto-continuing plan runner below. `auto` marks the rendered user bubble so
+// plan-driven steps are visually distinguishable from hand-typed ones, and
 // is also sent to the backend as queuedByTool so it's persisted on the row
 // (see SendChat's doc in app.go) — that's what lets a reloaded session still
-// tell a queued step apart from one the user actually typed.
-async function sendAndRender(text, { auto = false } = {}) {
-    const queuedByTool = auto ? 'queue_tasks' : '';
+// tell a plan-driven step apart from one the user actually typed. `text` is
+// already the fully-composed prompt by the time it gets here — for an auto
+// turn that includes the injected plan state (see planPromptFor) — this
+// function itself doesn't know or care whether a plan is involved.
+//
+// `displayText`, when given, is shown/persisted as the turn's user message
+// instead of `text` — used for a plan-driven turn, where `text` is the full
+// prompt the model needs (plan state + instructions) but showing all of that
+// in the chat log would just repeat the Plan tab's own checklist. Omitted
+// for a hand-typed turn, where `text` itself is already what should be shown.
+async function sendAndRender(text, { auto = false, displayText = '' } = {}) {
+    const queuedByTool = auto ? 'manage_plan' : '';
     // The session this turn belongs to — captured now, not re-read after the
     // round-trip below, since the user can switch sessions while a multi-step
     // (cot/tool) turn is still running. The live "chat:message" handler
@@ -286,20 +319,23 @@ async function sendAndRender(text, { auto = false } = {}) {
     // rendered" set those messages were already recorded in.
     const turnSessionId = getActiveSessionId();
     // Turn start: the first generated message's elapsed time is measured
-    // from here, unless a chat:status event resets it first.
+    // from here, unless a chat:status event resets it first. turnStartedAt
+    // marks the same instant but, unlike phaseStartedAt, stays fixed for the
+    // rest of the turn — it's what the final assistant reply's badge uses.
     phaseStartedAt = Date.now();
+    turnStartedAt = phaseStartedAt;
     // Snapshot context before rendering this turn's user bubble — the backend
     // appends `text` itself as the final turn, so history must not include it.
     const priorHistory = computeHistory();
     // Render optimistically for instant feedback; reconciled in place (see
     // renderIncomingMessage) with its real seq/model/mode once either the live
     // "chat:message" event or the round-trip below delivers the persisted row.
-    addMessage({ role: 'user', content: text, pinned: true, auto, toolName: queuedByTool });
+    addMessage({ role: 'user', content: displayText || text, pinned: true, auto, toolName: queuedByTool });
 
     setStatus('Sending…', 'loading');
 
     try {
-        const result = await sendMessage(text, priorHistory, queuedByTool);
+        const result = await sendMessage(text, priorHistory, queuedByTool, displayText);
         const msgs = result?.messages || [];
 
         if (turnSessionId === getActiveSessionId()) {
@@ -311,7 +347,7 @@ async function sendAndRender(text, { auto = false } = {}) {
                 renderIncomingMessage(m);
             }
 
-            maybeAdvanceTaskQueue(msgs);
+            advancePlan(msgs);
         }
 
         if (!msgs.some(m => m.role === 'assistant')) {
@@ -321,20 +357,26 @@ async function sendAndRender(text, { auto = false } = {}) {
     } catch (err) {
         console.error(err);
         addMessage({ role: 'assistant', content: `<em style="color:var(--text-muted)">Error: ${escapeHtml(String(err))}</em>`, pinned: false });
-        stopTaskQueue(); // a failure mid-run halts the queue rather than silently continuing
+        // A turn-level error (network/API failure) means we can't know what
+        // the model actually did — unlike a step explicitly reported as
+        // "failed" via manage_plan, this isn't something the consecutive-
+        // failure breaker can reason about, so just halt the run outright.
+        stopPlanRun();
     } finally {
         setStatus('Ready', 'ready');
         // This turn's tool loop (if any) is done — clear it and recompute the
-        // banner. If maybeAdvanceTaskQueue just started a queue step above,
-        // queueRunning is already true again, so the banner stays up with the
-        // queue's own text instead of flickering off.
+        // banner. If advancePlan just started the next step above, planRunning
+        // is already true again, so the banner stays up with the plan's own
+        // text instead of flickering off.
         toolLoopActive = false;
         currentToolName = '';
-        updateQueueBanner();
+        updatePlanBanner();
         // Refresh sidebar so session message counts stay current.
         renderSessionList();
         // Refresh in case the assistant created any artifacts this turn.
         renderArtifactList();
+        // Refresh in case the assistant created/updated the plan this turn.
+        renderPlanList();
     }
 }
 
@@ -348,104 +390,228 @@ async function doSend() {
     await sendAndRender(text);
 }
 
-// --- Self-queued task loop ---
-// The queue_tasks tool (tools_queue.go) is stateless server-side and ends the
-// turn immediately once dispatched (see chatWithTools in app.go) — its result
-// is just a human-facing confirmation, not the task list, since that result
-// is also what would otherwise be fed back into the model's own context. The
-// actual list comes from the tool call's own persisted arguments (toolArgs)
-// instead. All the looping happens here — after any turn resolves, if it
-// included a queue_tasks call, pull the list out and keep auto-sending the
-// next task until it's empty.
-const MAX_QUEUE_STEPS_TOTAL = 20; // cross-turn safety cap, independent of the tool's own per-call cap
-const MAX_TASKS_PER_QUEUE_CALL = 20; // mirrors maxQueuedTasks in tools_queue.go
-let taskQueue = [];
-let queueTotal = 0;
-let queueIndex = 0;
-let queueStepsRun = 0;
-let queueRunning = false;
+// --- Plan runner ---
+// The manage_plan tool (tools_plan.go) ends the turn immediately once
+// dispatched (see chatWithTools in app.go), full-replace: every call carries
+// the complete ordered plan, not a delta. All the looping happens here —
+// after any turn resolves, if it included a manage_plan call, read the plan
+// out of the call's own persisted arguments (toolArgs — not toolResult,
+// which is just a human-facing echo) and keep auto-sending the current step
+// until the plan is empty of pending/in_progress steps.
+//
+// A model can also reply to an auto-advanced step with plain prose and no
+// tool call at all (e.g. "OK, I'll work on step 2 and..."), which is not
+// progress — nothing was reported, so the plan would otherwise just stall
+// silently forever with no further turns firing. advancePlan treats that the
+// same as an explicit failure: retry (with an escalating reminder) up to
+// MAX_CONSECUTIVE_PLAN_FAILURES times before pausing, rather than treating a
+// tool-call-free reply as if the loop were simply done.
+const MAX_CONSECUTIVE_PLAN_FAILURES = 3; // pause-and-surface, not abandon-the-plan
 
-// Separate from the task queue: whether the *current* turn's tool-calling
+// A stronger reminder appended to the step prompt on retry after the model
+// replied without calling manage_plan at all (e.g. "OK, I'll work on step
+// 2..." with no tool call) — see planNoToolCallCount below. Plain prose is
+// not progress: without this, the plan would silently stop advancing since
+// nothing here would ever notice and re-prompt.
+const PLAN_NO_PROGRESS_NUDGE = `
+
+Reminder: your last reply didn't call manage_plan, so nothing was recorded — no step can be considered done until you do. Don't just describe what you're about to do; actually do the work, then call manage_plan (with the full plan) to report this step's outcome before ending your turn.`;
+
+let planRunning = false;
+// Distinguishes "stopped" from "paused after repeated failures" so the
+// banner can offer Resume instead of just Stop.
+let planPaused = false;
+let planConsecutiveFailures = 0;
+// Consecutive auto-advanced turns where the model replied without calling
+// manage_plan at all — separate from planConsecutiveFailures (an explicit
+// "failed" status IS the model engaging with the tool, just reporting it
+// couldn't finish the step; this counts turns where it didn't engage at
+// all). Reset whenever manage_plan is called, whatever the outcome.
+let planNoToolCallCount = 0;
+// The full plan and the step index we just sent to the model, remembered so
+// the *next* turn's result can be compared against it to tell whether that
+// specific step resolved to completed/failed — used to drive the
+// consecutive-failure breaker and to reconstruct the prompt on Resume.
+let lastPlanSteps = [];
+let pendingPlanStep = null;
+
+// Separate from the plan runner: whether the *current* turn's tool-calling
 // loop (app.go's chatWithTools) is mid-flight. A single turn can dispatch
 // several tool calls in a row before replying, and that should show the same
-// banner/stop affordance as a multi-turn queue — not just silently update the
-// status bar text.
+// banner/stop affordance as an auto-continuing plan — not just silently
+// update the status bar text.
 let toolLoopActive = false;
 let currentToolName = '';
 
-function maybeAdvanceTaskQueue(msgs) {
-    const call = msgs.find(m => m.role === 'tool' && m.toolName === 'queue_tasks');
-    if (call) {
-        // toolArgs is the model's own call arguments (e.g. {"tasks": [...]})
-        // as persisted alongside the call — not toolResult, which is now just
-        // a human-facing confirmation string (see tools_queue.go).
-        let newTasks = [];
-        try {
-            const parsed = JSON.parse(call.toolArgs);
-            newTasks = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
-        } catch { /* malformed — ignore, nothing to queue */ }
-        // Mirror the backend's own validation: trim, drop blanks, cap per call.
-        newTasks = newTasks
-            .filter(t => typeof t === 'string' && t.trim() !== '')
-            .map(t => t.trim())
-            .slice(0, MAX_TASKS_PER_QUEUE_CALL);
-        if (newTasks.length > 0) {
-            // A queue_tasks call mid-run just extends the remaining queue —
-            // handles the model re-queuing more steps as it goes, for free.
-            taskQueue.push(...newTasks);
-            queueTotal += newTasks.length;
-            queueRunning = true;
+// Parses a manage_plan call's persisted arguments into a plain steps array.
+// Malformed/empty entries are dropped rather than surfaced — nothing useful
+// for the runner to do with a step it can't display or target.
+function parsePlanSteps(call) {
+    try {
+        const parsed = JSON.parse(call.toolArgs);
+        const raw = Array.isArray(parsed?.steps) ? parsed.steps : [];
+        return raw
+            .filter(s => s && typeof s.content === 'string' && s.content.trim() !== '')
+            .map((s, i) => ({ seq: i + 1, content: s.content.trim(), status: s.status || 'pending' }));
+    } catch { return []; }
+}
+
+// The step the runner should work on next: the one already marked
+// in_progress (the manage_plan contract allows at most one), or otherwise
+// the first pending one — the model isn't required to set in_progress
+// itself, the runner is happy to just pick up the next pending step.
+function pickCurrentStep(steps) {
+    return steps.find(s => s.status === 'in_progress') || steps.find(s => s.status === 'pending') || null;
+}
+
+// Builds the prompt for an auto-advanced turn: the live plan state plus which
+// step to work on. Only ever sent on plan-driven turns, never on a message
+// the user typed themselves — see sendAndRender's `auto` flag.
+function planPromptFor(steps, current) {
+    const lines = steps
+        .map(s => `${s.seq}. [${s.status}] ${s.content}${s.seq === current.seq ? '  ← you are here' : ''}`)
+        .join('\n');
+    return `Here is the current plan:\n${lines}\n\nContinue working on step ${current.seq}: "${current.content}". ` +
+        `Call manage_plan (with the full plan) to mark it completed or failed before moving on — don't skip ahead to later steps in this same reply.`;
+}
+
+// Short human-facing label for a plan step — used both for the plan banner
+// and as the auto-advanced turn's displayed "Task" line (see sendAndRender's
+// displayText), instead of showing the full planPromptFor text (with the
+// whole plan folded in) in the chat log, which just repeats what the Plan
+// tab already shows.
+function planTaskLabel(step, total) {
+    return `Working on step ${step?.seq ?? '?'} of ${total}: ${step?.content ?? ''}`;
+}
+
+function advancePlan(msgs) {
+    const call = msgs.find(m => m.role === 'tool' && m.toolName === 'manage_plan');
+    // A plan-driven turn's own (unpinned) user row is tagged with toolName
+    // 'manage_plan' — see queuedByTool in sendAndRender. If that's what this
+    // turn was, but no manage_plan call came back, the model replied with
+    // plain prose ("OK, I'll work on step 2...") instead of actually acting —
+    // that's the specific failure mode this whole branch exists to catch.
+    const wasAutoStep = msgs.some(m => m.role === 'user' && m.toolName === 'manage_plan');
+
+    if (!call) {
+        if (!wasAutoStep) return; // an ordinary turn — nothing plan-related happened
+        planNoToolCallCount++;
+    } else {
+        planNoToolCallCount = 0;
+
+        const steps = parsePlanSteps(call);
+        if (steps.length === 0) return;
+        lastPlanSteps = steps;
+
+        // Track whether the step we just sent resolved to completed/failed,
+        // to drive the consecutive-failure breaker below — matched by seq
+        // rather than content, since the model may reword a step when it
+        // resubmits.
+        if (pendingPlanStep) {
+            const resolved = steps.find(s => s.seq === pendingPlanStep.seq);
+            if (resolved?.status === 'failed') {
+                planConsecutiveFailures++;
+            } else if (resolved?.status === 'completed') {
+                planConsecutiveFailures = 0;
+            }
         }
+
+        const next = pickCurrentStep(steps);
+        if (!next) {
+            // Nothing left pending/in_progress — the plan is done.
+            planRunning = false;
+            planPaused = false;
+            pendingPlanStep = null;
+            updatePlanBanner();
+            return;
+        }
+        pendingPlanStep = next;
     }
 
-    if (!queueRunning) return;
-
-    if (taskQueue.length === 0 || queueStepsRun >= MAX_QUEUE_STEPS_TOTAL) {
-        stopTaskQueue();
+    if (planConsecutiveFailures >= MAX_CONSECUTIVE_PLAN_FAILURES || planNoToolCallCount >= MAX_CONSECUTIVE_PLAN_FAILURES) {
+        // Pause rather than abandon: the plan and the current step stay
+        // exactly where they are so Resume can pick the run back up instead
+        // of forcing the user to re-explain the whole plan from scratch.
+        planRunning = false;
+        planPaused = true;
+        updatePlanBanner();
         return;
     }
 
-    const next = taskQueue.shift();
-    queueIndex++;
-    queueStepsRun++;
-    updateQueueBanner();
+    planRunning = true;
+    planPaused = false;
+    updatePlanBanner();
+    // A retry after the model skipped calling the tool gets a sharper
+    // reminder appended — the same prompt alone already didn't work once.
+    const prompt = planPromptFor(lastPlanSteps, pendingPlanStep) + (planNoToolCallCount > 0 ? PLAN_NO_PROGRESS_NUDGE : '');
     // Deliberately not awaited — a detached continuation, not a bug. This lets
     // the current turn's finally block (sidebar refresh, status reset) settle
-    // immediately instead of waiting on the entire remaining queue.
-    sendAndRender(next, { auto: true });
+    // immediately instead of waiting on the entire remaining plan.
+    sendAndRender(prompt, { auto: true, displayText: planTaskLabel(pendingPlanStep, lastPlanSteps.length) });
 }
 
-export function stopTaskQueue() {
-    taskQueue = [];
-    queueRunning = false;
-    queueIndex = 0;
-    queueTotal = 0;
+export function stopPlanRun() {
+    planRunning = false;
+    planPaused = false;
+    planConsecutiveFailures = 0;
+    planNoToolCallCount = 0;
+    pendingPlanStep = null;
     // Stop can't actually cancel an in-flight backend request (no cancellation
-    // channel exists yet) — same limitation the queue itself already has, it
-    // only prevents further auto-continuation. Clearing this at least
-    // dismisses the banner rather than leaving it stuck showing "tool loop"
-    // once the user has asked to stop.
+    // channel exists yet) — it only prevents further auto-continuation.
+    // Clearing this at least dismisses the banner rather than leaving it
+    // stuck showing "tool loop" once the user has asked to stop.
     toolLoopActive = false;
-    updateQueueBanner();
+    updatePlanBanner();
 }
 
-function updateQueueBanner() {
-    const busy = queueRunning || toolLoopActive;
-    // Disabled while busy so a manually-typed message can't interleave with
-    // auto-steps/tool calls and corrupt turn ordering — stop-then-type, not concurrent.
-    textarea.disabled = busy;
-    sendBtn.disabled = busy;
-    if (!queueBanner) return;
-    queueBanner.style.display = busy ? '' : 'none';
+// Manually resumes an auto-continuing plan run after it paused on repeated
+// failures (or repeated no-tool-call replies) — resets both counters and
+// re-sends the same step that was paused on, so the model gets another shot
+// at it, nudge included if that's why it paused.
+function resumePlanRun() {
+    if (!pendingPlanStep) return;
+    const hadNoToolCallStall = planNoToolCallCount > 0;
+    planConsecutiveFailures = 0;
+    planNoToolCallCount = 0;
+    planPaused = false;
+    planRunning = true;
+    updatePlanBanner();
+    const prompt = planPromptFor(lastPlanSteps, pendingPlanStep) + (hadNoToolCallStall ? PLAN_NO_PROGRESS_NUDGE : '');
+    sendAndRender(prompt, {
+        auto: true,
+        displayText: planTaskLabel(pendingPlanStep, lastPlanSteps.length),
+    });
+}
+
+function updatePlanBanner() {
+    const busy = planRunning || planPaused || toolLoopActive;
+    // Disabled while actively running (not just paused) so a manually-typed
+    // message can't interleave with auto-steps/tool calls and corrupt turn
+    // ordering — stop-then-type, not concurrent. Paused leaves input enabled
+    // since nothing is in flight.
+    const running = planRunning || toolLoopActive;
+    textarea.disabled = running;
+    sendBtn.disabled = running;
+    if (!planBanner) return;
+    planBanner.style.display = busy ? '' : 'none';
+    if (planResumeBtn) planResumeBtn.style.display = planPaused ? '' : 'none';
     if (!busy) return;
-    const label = queueBanner.querySelector('.queue-banner-text');
+    const label = planBanner.querySelector('.plan-banner-text');
     if (!label) return;
-    label.textContent = queueRunning
-        ? `Running step ${queueIndex} of ${queueTotal}…`
-        : `Executing ${currentToolName || 'tool'}…`;
+    if (planPaused) {
+        const reason = planNoToolCallCount >= MAX_CONSECUTIVE_PLAN_FAILURES
+            ? `${MAX_CONSECUTIVE_PLAN_FAILURES} replies without calling manage_plan`
+            : `${MAX_CONSECUTIVE_PLAN_FAILURES} failed attempts`;
+        label.textContent = `Paused after ${reason} on step ${pendingPlanStep?.seq ?? '?'}: ${pendingPlanStep?.content ?? ''}`;
+    } else if (planRunning) {
+        label.textContent = planTaskLabel(pendingPlanStep, lastPlanSteps.length);
+    } else {
+        label.textContent = `Executing ${currentToolName || 'tool'}…`;
+    }
 }
 
-queueStopBtn?.addEventListener('click', stopTaskQueue);
+planStopBtn?.addEventListener('click', stopPlanRun);
+planResumeBtn?.addEventListener('click', resumePlanRun);
 
 // --- Live status from the backend (chain-of-thought / tool execution) ---
 const THINKING_LABELS = ['Thinking…', 'Cogitating…', 'Pondering…'];
@@ -460,7 +626,7 @@ EventsOn('chat:status', (payload) => {
         setStatus(`Executing ${payload.tool}…`, 'loading');
         toolLoopActive = true;
         currentToolName = payload.tool;
-        updateQueueBanner();
+        updatePlanBanner();
     }
 });
 

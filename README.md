@@ -111,9 +111,10 @@ an attempt to emulate the thinking modes of Claude.
 ## Other features
 
 - **Tool use.** The model has access to:
-  - `queue_tasks`: break multi-step work into a list of follow-up prompts
-    the app feeds back one at a time, instead of trying to cram everything
-    into a single reply.
+  - `manage_plan`: lay out multi-step work as an ordered, statused plan the
+    app feeds back one step at a time (with the plan's current state), instead
+    of trying to cram everything into a single reply. Tracked in a sidebar
+    checklist.
   - `create_artifact` / `list_artifacts` / `get_artifact`: persist
     substantial content (documents, code, notes) outside the chat log,
     browsable in the artifacts sidebar.
@@ -139,7 +140,7 @@ an attempt to emulate the thinking modes of Claude.
 simple-cot-chat/
 ├── main.go              # entry point — Wails app setup
 ├── app.go               # chat turn orchestration (SendChat), cot mode handling, config
-├── tools*.go            # tool implementations (queue_tasks, artifacts, skills)
+├── tools*.go            # tool implementations (manage_plan, artifacts, skills, files)
 ├── store/               # DuckDB-backed session/message/artifact persistence
 ├── skill/               # skill file discovery (frontmatter parsing, CRUD)
 ├── conf/

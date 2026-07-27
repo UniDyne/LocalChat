@@ -138,6 +138,24 @@ export namespace store {
 	        this.createdAt = source["createdAt"];
 	    }
 	}
+	export class PlanStep {
+	    seq: number;
+	    content: string;
+	    status: string;
+	    updatedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PlanStep(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.seq = source["seq"];
+	        this.content = source["content"];
+	        this.status = source["status"];
+	        this.updatedAt = source["updatedAt"];
+	    }
+	}
 	export class Session {
 	    id: string;
 	    title: string;

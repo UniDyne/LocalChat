@@ -42,6 +42,10 @@ export function GetModel() {
   return window['go']['main']['App']['GetModel']();
 }
 
+export function GetPlan(arg1) {
+  return window['go']['main']['App']['GetPlan'](arg1);
+}
+
 export function GetSessions() {
   return window['go']['main']['App']['GetSessions']();
 }
@@ -70,6 +74,10 @@ export function RenameSession(arg1, arg2) {
   return window['go']['main']['App']['RenameSession'](arg1, arg2);
 }
 
+export function SaveArtifact(arg1) {
+  return window['go']['main']['App']['SaveArtifact'](arg1);
+}
+
 export function SaveMessage(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveMessage'](arg1, arg2, arg3);
 }
@@ -78,8 +86,8 @@ export function SelectDirectory() {
   return window['go']['main']['App']['SelectDirectory']();
 }
 
-export function SendChat(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SendChat'](arg1, arg2, arg3);
+export function SendChat(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SendChat'](arg1, arg2, arg3, arg4);
 }
 
 export function SetCotMode(arg1) {

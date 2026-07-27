@@ -30,7 +30,7 @@ func (a *App) toolRegistry() []ToolDef {
 		a.createArtifactTool(),
 		a.listArtifactsTool(),
 		a.getArtifactTool(),
-		a.queueTasksTool(),
+		a.managePlanTool(),
 	}
 	if a.hasWorkDir() {
 		tools = append(tools, a.listFilesTool(), a.readFileTool(), a.writeFileTool(), a.updateFileTool())

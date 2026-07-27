@@ -1,9 +1,10 @@
 import { ListModels, SendChat, GetModel, SetModel } from '../wailsjs/go/main/App';
 import { ListCotModes, GetCotMode, SetCotMode } from '../wailsjs/go/main/App';
 import { CreateSession, GetCurrentSession, GetSessions, SwitchSession, DeleteSession, RenameSession, GetMessages } from '../wailsjs/go/main/App';
-import { GetArtifacts, GetArtifactContent, CreateArtifactManual } from '../wailsjs/go/main/App';
+import { GetArtifacts, GetArtifactContent, CreateArtifactManual, SaveArtifact } from '../wailsjs/go/main/App';
 import { SetMessagePinned } from '../wailsjs/go/main/App';
 import { SelectDirectory, ClearDirectory, GetWorkDir } from '../wailsjs/go/main/App';
+import { GetPlan } from '../wailsjs/go/main/App';
 
 /**
  * Return an array of available model names from the configured Ollama server.
@@ -79,16 +80,21 @@ export async function getWorkDir() {
  * Send a user message (optionally with history) and return every message
  * persisted this turn, in order: the user message, an optional "cot" note,
  * zero or more "tool" calls, and the final "assistant" reply.
- * @param {string} text - The user's message.
+ * @param {string} text - The user's message (what the model actually sees).
  * @param {{role:string,content:string}[]} [history=[]] - Prior pinned messages.
  * @param {string} [queuedByTool=''] - Name of the tool that queued this message
- *   (currently always 'queue_tasks'), or '' if the user typed it themselves.
+ *   (currently always 'manage_plan'), or '' if the user typed it themselves.
  *   Forces cot mode to 'none' for this turn and is persisted on the row.
+ * @param {string} [displayText=''] - What's persisted/shown as this turn's
+ *   user message in the chat log instead of `text` — used for a plan-driven
+ *   turn, where `text` is the full prompt (current plan state folded in) but
+ *   showing that in the log would just repeat the Plan tab's own checklist.
+ *   Empty for a hand-typed turn, where there's nothing to shorten.
  * @returns {{messages: {seq:number,role:string,content:string,model:string,mode:string,pinned:boolean,toolName?:string,toolArgs?:string,toolResult?:string}[]}}
  */
-export async function sendMessage(text, history = [], queuedByTool = '') {
+export async function sendMessage(text, history = [], queuedByTool = '', displayText = '') {
     if (!text || !text.trim()) throw new Error('Empty message');
-    return await SendChat(text, history, queuedByTool);
+    return await SendChat(text, history, queuedByTool, displayText);
 }
 
 // --- Session management ---
@@ -166,6 +172,17 @@ export async function setMessagePinned(sessionId, seq, pinned) {
     await SetMessagePinned(sessionId, seq, pinned);
 }
 
+// --- Plan ---
+
+/**
+ * Load the current plan for a session (see manage_plan), empty if none created yet.
+ * @param {string} sessionId
+ * @returns {{seq:number,content:string,status:string,updatedAt:string}[]}
+ */
+export async function getPlan(sessionId) {
+    return await GetPlan(sessionId);
+}
+
 // --- Artifacts ---
 
 /**
@@ -195,4 +212,14 @@ export async function getArtifactContent(id) {
  */
 export async function createArtifactManual(title, content, contentType) {
     return await CreateArtifactManual(title, content, contentType);
+}
+
+/**
+ * Open a native save dialog (defaulting to the artifact's own title as the
+ * filename) and write its content to wherever the user chooses.
+ * @param {string} id
+ * @returns {string} The saved path, or "" if the user cancelled the dialog.
+ */
+export async function saveArtifact(id) {
+    return await SaveArtifact(id);
 }

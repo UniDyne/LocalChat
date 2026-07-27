@@ -41,7 +41,7 @@ a task (see below), a subtle dark tint for the assistant.
 │ LEFT │   chat-log (flex:1,       │  RIGHT   │
 │ (0 / │   scrolls independently)  │  (0 /    │
 │ 240px│                           │  260px   │
-│ when │   queue-banner (if any)   │  when    │
+│ when │   plan-banner (if any)    │  when    │
 │ open)│   input-area              │  open)   │
 ├──────┴───────────────────────────┴──────────┤ statusbar (24px)
 └────────────────────────────────────────────┘
@@ -52,10 +52,14 @@ a task (see below), a subtle dark tint for the assistant.
 - **Left sidebar** (`#sidebarLeft`): collapsed (`width:0`) by default. Only
   the **Sessions** tab is wired up — a Files tab and a Search tab exist in
   the markup as commented-out placeholders for future use, not rendered.
-- **Main area** (`.main`): chat log, an optional task-queue progress banner,
+- **Main area** (`.main`): chat log, an optional plan progress banner,
   and the input area, stacked vertically.
-- **Right sidebar** (`#sidebarRight`, `#artifactList`): the artifacts panel —
-  collapsed by default, 260px when expanded.
+- **Right sidebar** (`#sidebarRight`): collapsed by default, 260px when
+  expanded. Tabbed like the left sidebar — **Artifacts** (`#artifactList`)
+  and **Plan** (`#planList`), each its own `.sidebar-content` pane, switched
+  with the same `switchTab` used for the left sidebar's tabs (scoped to
+  whichever `<aside>` the clicked tab lives in, so the two panes' tabs don't
+  interfere with each other).
 - **Status bar** (`.statusbar`, 24px, accent-purple background): connection
   status with a live elapsed-time counter, current model, cot mode, and
   version.
@@ -75,17 +79,17 @@ title.
   message count). Click switches sessions; a hover-revealed 🗑 button
   deletes (with a confirm prompt); right-click renames (via a native
   `prompt()`).
-- Switching sessions stops any running task queue for the old session and
-  reloads the chat log from the backend for the new one.
+- Switching sessions stops any running plan for the old session and
+  reloads the chat log (and plan checklist) from the backend for the new one.
 
 ### Chat Area (`.chat-log`)
 Each entry is a `.message` with a role-specific style:
 
 - **`.msg-user`** — green-tinted, avatar `U`, header "You".
 - **`.msg-user.msg-task`** — amber-tinted, avatar `T`, header "Task" instead
-  of "You". Applied to a message auto-dispatched from a queued task list
+  of "You". Applied to a message auto-dispatched from an active plan
   (`rec.auto` while the app is running, or the persisted `toolName` field
-  after a reload — see `queue_tasks` in `README.md`/`ARCHITECTURE.md`) —
+  after a reload — see `manage_plan` in `README.md`/`ARCHITECTURE.md`) —
   visually distinct so it's clear at a glance which turns you actually typed.
 - **`.msg-assistant`** — dark-tinted, avatar `A`, header "Assistant". Carries
   a small badge with the model/mode used, and (for the current session
@@ -106,11 +110,21 @@ Each entry is a `.message` with a role-specific style:
   for LaTeX) for markdown, `highlight.js` for code blocks, with a copy
   button on each code block.
 
-### Task Queue Banner (`.queue-banner`)
-Hidden by default; shown while `queue_tasks` is auto-continuing
-("Running step N of M…") or a single turn's own tool-calling loop is
-mid-flight ("Executing `<tool>`…"). A **Stop** button halts the queue after
-the current step.
+### Plan Banner (`.plan-banner`)
+Hidden by default; shown while `manage_plan` is auto-continuing
+("Working on step N of M: …") or a single turn's own tool-calling loop is
+mid-flight ("Executing `<tool>`…"). A **Stop** button halts the plan after
+the current step. If a step fails 3 times in a row, the run pauses instead of
+continuing or aborting the rest of the plan, and a **Resume** button appears
+to pick it back up.
+
+### Right Sidebar Tabs — Artifacts / Plan
+Separate tabs (`plan.js` / `artifacts.js`), same pattern as the left
+sidebar's tabs. **Plan** (`#planList`) shows each step with a status icon
+(`○` pending, `◐` in progress, `●` completed, `✕` failed), backed by
+`GetPlan` so it survives a reload; an empty-state message is shown instead
+of an empty pane when the session has no plan yet, matching the Artifacts
+tab's own empty state.
 
 ### Input Area (`.input-area`)
 - **Toolbar**: a model `<select>` and a cot-mode `<select>` (see

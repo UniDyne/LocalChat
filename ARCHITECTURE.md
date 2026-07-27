@@ -24,7 +24,7 @@ simple-cot-chat/
 │                             #   cot mode handling (loadCotConfig, cotEvalWrapper/cotAnswerWrapper),
 │                             #   chatWithTools (tool-calling loop), session/message RPC methods
 ├── tools.go                 # ToolDef type, tool registry, dispatch
-├── tools_queue.go           # queue_tasks
+├── tools_plan.go            # manage_plan
 ├── tools_artifacts.go       # create_artifact / list_artifacts / get_artifact
 ├── tools_skills.go          # search_skills / load_skill / create_skill / update_skill
 ├── artifacts.go, skills.go  # thin frontend-facing RPC wrappers around store/skill packages
@@ -103,19 +103,35 @@ Three tables, defined in `store.Open`:
    no more tool calls. Each tool call is persisted immediately as an
    unpinned `role: "tool"` row and emitted live via the `chat:message`
    event, so multi-step turns show progress as they happen rather than all
-   at once at the end. `queue_tasks` is special-cased to end the turn the
-   moment it's dispatched — the frontend, not the model, drives the
-   follow-up tasks one at a time.
+   at once at the end. `manage_plan` is special-cased to end the turn the
+   moment it's dispatched — the frontend, not the model, drives the plan's
+   steps one at a time (see below).
 4. The final assistant reply is persisted as `role: "assistant"` and
    returned to the frontend alongside every other message produced this
    turn.
 
-Queued follow-up tasks are re-sent through this same `SendChat` path with a
-`queuedByTool` parameter set (currently always `"queue_tasks"`), which forces
-the effective cot mode to `none` for that call regardless of the UI's
-current selection, and is persisted on the row's `tool_name` — this is what
-lets a reloaded session still tell a queued step apart from something the
-user actually typed (see `UI.md`'s note on `.msg-task` styling).
+`manage_plan` replaces the whole plan (an ordered list of `{content, status}`
+steps, at most one `in_progress`) on every call, persisted in the `plan_steps`
+table (`store.SetPlan`/`GetPlan`). The frontend reads the steps out of that
+tool call's own persisted arguments, picks the `in_progress` (or first
+`pending`) step, and re-sends it through the same `SendChat` path with a
+`queuedByTool` parameter set to `"manage_plan"` — this forces the effective
+cot mode to `none` for that call regardless of the UI's current selection,
+and is persisted on the row's `tool_name`, which is what lets a reloaded
+session still tell a plan-driven step apart from something the user actually
+typed (see `UI.md`'s note on `.msg-task` styling). Unlike the `queue_tasks`
+tool this replaced, the frontend also re-injects the current plan state into
+the prompt for each auto-advanced step (not user-typed turns), so the model
+stays aware of the plan across turns instead of starting each step blind.
+
+`SendChat` takes a separate `displayMsg` argument for this: the frontend
+sends the full plan-injected prompt as the request itself (what the model
+acts on) but a short "Working on step N of M: …" label as `displayMsg` —
+persisted/shown as that turn's chat log entry instead of the full prompt,
+since the whole plan is already visible in the Plan tab. Both the user and
+assistant rows of a plan-driven turn are also persisted unpinned (see
+`SendChat`'s doc comment in `app.go`), so this repeated framing never bloats
+future turns' context either.
 
 ## Separation of Concerns (frontend)
 

@@ -24,6 +24,8 @@ export function GetMessages(arg1:string):Promise<Array<store.StoredMessage>>;
 
 export function GetModel():Promise<string>;
 
+export function GetPlan(arg1:string):Promise<Array<store.PlanStep>>;
+
 export function GetSessions():Promise<Array<store.Session>>;
 
 export function GetSkillBody(arg1:string):Promise<string>;
@@ -38,11 +40,13 @@ export function ListSkills():Promise<Array<skill.Meta>>;
 
 export function RenameSession(arg1:string,arg2:string):Promise<void>;
 
+export function SaveArtifact(arg1:string):Promise<string>;
+
 export function SaveMessage(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function SelectDirectory():Promise<string>;
 
-export function SendChat(arg1:string,arg2:Array<main.ChatMessage>,arg3:string):Promise<main.ChatTurnResult>;
+export function SendChat(arg1:string,arg2:Array<main.ChatMessage>,arg3:string,arg4:string):Promise<main.ChatTurnResult>;
 
 export function SetCotMode(arg1:string):Promise<void>;
 

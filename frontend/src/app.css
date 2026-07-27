@@ -101,10 +101,12 @@
   /* Empty state */
   .empty-state{flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px}
 
-  /* Task queue progress banner */
-  .queue-banner{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;background:var(--bg-tertiary);border-top:1px solid var(--border);font-size:11px;color:var(--text-secondary);flex-shrink:0}
-  .queue-stop-btn{background:none;border:1px solid var(--border);color:var(--text-primary);cursor:pointer;font-size:11px;border-radius:var(--radius);padding:3px 10px}
-  .queue-stop-btn:hover{border-color:#e06c75;color:#e06c75}
+  /* Plan progress banner */
+  .plan-banner{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 12px;background:var(--bg-tertiary);border-top:1px solid var(--border);font-size:11px;color:var(--text-secondary);flex-shrink:0}
+  .plan-banner-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .plan-stop-btn,.plan-resume-btn{background:none;border:1px solid var(--border);color:var(--text-primary);cursor:pointer;font-size:11px;border-radius:var(--radius);padding:3px 10px;flex-shrink:0}
+  .plan-stop-btn:hover{border-color:#e06c75;color:#e06c75}
+  .plan-resume-btn:hover{border-color:var(--accent);color:var(--accent-hover)}
 
   /* Bottom Input Area */
   .input-area{border-top:1px solid var(--border);background:var(--bg-secondary);padding:8px;flex-shrink:0}
@@ -130,8 +132,19 @@
   /* Right Sidebar */
   .sidebar-right{width:0;background:var(--bg-secondary);border-left:1px solid var(--border);transition:width .15s ease;overflow:hidden;flex-shrink:0;display:flex;flex-direction:column;align-items:stretch}
   .sidebar-right.expanded{width:260px;border-left:1px solid var(--border)}
-  #artifactList{flex:1;overflow-y:auto}
   .right-empty{color:var(--text-muted);font-size:12px;text-align:center;padding:20px}
+
+  /* Plan checklist */
+  .plan-list-title{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;padding:8px 8px 4px}
+  .plan-item{display:flex;align-items:flex-start;gap:6px;padding:4px 8px;font-size:12px;line-height:1.4}
+  .plan-item-icon{flex-shrink:0;color:var(--text-muted);font-size:11px;line-height:1.6}
+  .plan-item-content{color:var(--text-primary);word-break:break-word}
+  .plan-item.plan-completed .plan-item-content{color:var(--text-muted);text-decoration:line-through}
+  .plan-item.plan-completed .plan-item-icon{color:var(--success)}
+  .plan-item.plan-in_progress .plan-item-icon{color:var(--accent-hover)}
+  .plan-item.plan-in_progress .plan-item-content{color:var(--text-primary);font-weight:600}
+  .plan-item.plan-failed .plan-item-icon{color:#e06c75}
+  .plan-item.plan-failed .plan-item-content{color:#e06c75}
 
   /* Artifact list */
   .artifact-item{position:relative;padding:6px 8px;cursor:pointer;border-bottom:1px solid var(--border)}

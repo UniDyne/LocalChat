@@ -385,7 +385,7 @@ const cotAnswerWrapper = `%s
 ---
 The section above is the prompt to answer. Below are your own hidden internal reasoning notes on it, produced in a prior step the user never saw — use them to inform your answer, but do not mention, quote, or refer to them ("notes", "analysis", etc.) in your reply. Just answer the prompt directly, as if this were the only step.
 
-If the notes describe something that spans multiple distinct steps, or the full deliverable would be long (e.g. a multi-file app, a long document), do not attempt to fit the whole thing into this one reply — use queue_tasks to hand the remaining steps to yourself one at a time, and create_artifact for the actual deliverable content, per your operating instructions. Only write the full thing directly here if it's genuinely short.
+If the notes describe something that spans multiple distinct steps, or the full deliverable would be long (e.g. a multi-file app, a long document), do not attempt to fit the whole thing into this one reply — use manage_plan to lay out the remaining steps and work through them one at a time, and create_artifact for the actual deliverable content, per your operating instructions. Only write the full thing directly here if it's genuinely short.
 
 %s`
 
@@ -421,22 +421,38 @@ type ChatTurnResult struct {
 // calls, assistant).
 //
 // queuedByTool is empty for a message the user typed themselves, or the name
-// of the tool that queued it (currently always "queue_tasks") when the
-// frontend is auto-dispatching one step of a queued task list. Queued tasks
-// always run as if the cot mode were "none" regardless of the mode currently
-// selected in the UI — they're follow-up instructions the model wrote for
-// itself, not a fresh user question, so there's nothing left to evaluate with
-// a cot pass. This is a per-call override; it doesn't touch a.mode, so the
-// UI's mode selector and any hand-typed messages are unaffected. The override
-// (and queuedByTool itself) is persisted on the row so a reloaded session can
-// still tell a queued step apart from one the user actually typed.
+// of the tool that queued it (currently always "manage_plan") when the
+// frontend is auto-dispatching the current step of an active plan. Queued
+// steps always run as if the cot mode were "none" regardless of the mode
+// currently selected in the UI — they're follow-up instructions the model
+// wrote for itself, not a fresh user question, so there's nothing left to
+// evaluate with a cot pass. Both are per-call overrides; neither touches
+// a.mode, so the UI's mode selector and any hand-typed messages are
+// unaffected. The override (and queuedByTool itself) is persisted on the row
+// so a reloaded session can still tell a queued step apart from one the user
+// actually typed.
+//
+// A queued step's user/assistant rows are also persisted unpinned (see
+// `pinned` below), unlike a hand-typed turn's: the frontend re-injects the
+// live plan state into every subsequent step's prompt anyway, so carrying
+// last step's version of it forward in pinned history would just repeat
+// near-duplicate content on every future turn — bloating context and giving
+// the model a wall of repetitive "here's the plan again" turns to
+// pattern-match against instead of acting on the current one.
+//
+// displayMsg, when non-empty, is what's persisted/shown as this turn's user
+// message in the chat log instead of userMsg — used for a plan-driven turn,
+// where userMsg is the full prompt (current plan state folded in) the model
+// needs to actually act on, but showing that whole thing in the chat log
+// would just repeat the Plan tab's own checklist back at the user. Empty
+// for a hand-typed turn, where there's nothing to shorten.
 //
 // For a custom (file-based) cot mode, this runs two model calls: a hidden evaluation
 // pass using the cot prompt as a system message, then a final answer pass that folds
 // the evaluation back in as a hidden note. The cot note and any tool calls are
 // persisted as their own unpinned message rows (visible collapsed in the UI, but
 // excluded from context on future turns unless the user pins them).
-func (a *App) SendChat(userMsg string, history []ChatMessage, queuedByTool string) (ChatTurnResult, error) {
+func (a *App) SendChat(userMsg string, history []ChatMessage, queuedByTool string, displayMsg string) (ChatTurnResult, error) {
 	if a.cli == nil {
 		return ChatTurnResult{}, fmt.Errorf("Ollama client not initialized")
 	}
@@ -457,6 +473,24 @@ func (a *App) SendChat(userMsg string, history []ChatMessage, queuedByTool strin
 	mode := a.mode
 	if queuedByTool != "" {
 		mode = CotModeNone
+	}
+
+	// A plan-driven turn's user prompt (the injected current-step text — see
+	// planPromptFor in app.js) and its reply are only relevant for that one
+	// step: the frontend rebuilds the equivalent prompt from the live plan
+	// state on every subsequent step anyway (see manage_plan/advancePlan), so
+	// pinning them would just carry forward repeated near-duplicate content
+	// on every future turn's context — for a long-running plan this bloats
+	// context fast and, worse, gives the model a wall of near-identical
+	// "here's the plan again" turns to pattern-match against instead of
+	// actually acting, which is what let it drift into replying with prose
+	// and no tool call at all. Both rows stay visible in the chat log
+	// (dimmed, like any unpinned message) and can be pinned back manually.
+	pinned := queuedByTool == ""
+
+	displayText := userMsg
+	if displayMsg != "" {
+		displayText = displayMsg
 	}
 
 	baseMsgs := make([]api.Message, 0, len(history)+1)
@@ -484,16 +518,16 @@ func (a *App) SendChat(userMsg string, history []ChatMessage, queuedByTool strin
 	// turnMsgs accumulates every message row this turn persists, in
 	// conversation order. Each message is saved to the store as soon as it's
 	// produced (not batched until the turn succeeds) so that a turn cut short
-	// by an error — e.g. exceeding maxToolIterations — still leaves everything
-	// that happened so far in the session.
-	turnMsgs := []ChatTurnMessage{a.persist(sessionID, store.NewMessage{Role: "user", Content: userMsg, Model: a.model, Mode: mode, Pinned: true, ToolName: queuedByTool})}
+	// by an error (e.g. the underlying chat request failing) still leaves
+	// everything that happened so far in the session.
+	turnMsgs := []ChatTurnMessage{a.persist(sessionID, store.NewMessage{Role: "user", Content: displayText, Model: a.model, Mode: mode, Pinned: pinned, ToolName: queuedByTool})}
 
 	// Title the session from the user's opening message as soon as it's in,
-	// not after the model replies — a long tool-calling/queued-task chain, or
-	// one that errors out (timeout, exceeding maxToolIterations), would
-	// otherwise leave the session titled "New Chat" indefinitely.
+	// not after the model replies — a long tool-calling/plan-driven chain, or
+	// one that errors out (e.g. the underlying chat request timing out),
+	// would otherwise leave the session titled "New Chat" indefinitely.
 	if isFirstMessage {
-		title := titleFromMessage(userMsg, 40)
+		title := titleFromMessage(displayText, 40)
 		if err := a.sess.RenameSession(sessionID, title); err != nil {
 			slog.Warn("failed to auto-title session", "session", sessionID, "error", err)
 		} else {
@@ -540,7 +574,7 @@ func (a *App) SendChat(userMsg string, history []ChatMessage, queuedByTool strin
 		// chatWithTools, so the caller still gets a full record of the turn.
 		return ChatTurnResult{Messages: turnMsgs}, fmt.Errorf("chat request failed: %w", err)
 	}
-	turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{Role: "assistant", Content: fullReply, Model: a.model, Mode: mode, Pinned: true}))
+	turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{Role: "assistant", Content: fullReply, Model: a.model, Mode: mode, Pinned: pinned}))
 
 	return ChatTurnResult{Messages: turnMsgs}, nil
 }
@@ -597,41 +631,58 @@ func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools ap
 	return full, err
 }
 
-// maxToolIterations caps how many rounds of tool calls a single chat turn may
-// make, guarding against a model that keeps calling tools indefinitely.
-const maxToolIterations = 16
-
 // chatWithTools runs the tool-calling loop for a chat turn: send the request
 // with the tool registry attached, execute any requested tool calls, feed
 // their results back as "tool" messages, and repeat until the model responds
-// with no more tool calls (or maxToolIterations is hit). Each dispatched tool
-// call is persisted immediately (role "tool", unpinned) and also returned as
-// a ChatTurnMessage so the caller can report it to the frontend — even if the
-// loop later errors out (e.g. the iteration cap is hit), everything dispatched
-// so far is already in the session.
+// with no more tool calls. There is deliberately no cap on the number of
+// rounds — a plan (see manage_plan) can legitimately require many tool calls
+// to work through, and an artificial cap just aborts a turn partway through
+// real progress. Each dispatched tool call is persisted immediately (role
+// "tool", unpinned) and also returned as a ChatTurnMessage so the caller can
+// report it to the frontend — even if the loop later errors out (e.g. the
+// underlying chat request fails), everything dispatched so far is already in
+// the session.
 //
-// queue_tasks is special-cased to end the turn immediately once dispatched,
+// manage_plan is special-cased to end the turn immediately once dispatched,
 // instead of looping back for another model round: its whole point is to
-// hand off remaining work to the frontend's one-at-a-time continuation, and
+// hand off the current step to the frontend's plan-driven continuation, and
 // giving the model another generation afterward just invites it to go ahead
-// and attempt those same tasks itself before the turn ends. Ending the turn
-// right there removes that possibility structurally rather than relying on
-// the model to respect the tool description's wording.
+// and attempt later steps itself before the turn ends. Ending the turn right
+// there removes that possibility structurally rather than relying on the
+// model to respect the tool description's wording.
 func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.ThinkValue, mode string) (string, []ChatTurnMessage, error) {
 	tools := toAPITools(a.toolRegistry())
 	var turnMsgs []ChatTurnMessage
 
-	for i := 0; i < maxToolIterations; i++ {
+	// lastNarration is the most recent non-empty resp.Content seen across any
+	// round so far. Some models front-load their explanation into an earlier
+	// round (e.g. "I'll break this into 3 steps..." alongside an unrelated
+	// exploratory tool call) and then call manage_plan itself with no
+	// accompanying text in a later round — without this, that explanation
+	// would be silently lost (it's only ever appended to msgs for the
+	// model's own context, never surfaced) and the turn would fall through
+	// to the tool's mechanical echo instead, which is the "regurgitation"
+	// behavior this is meant to avoid.
+	lastNarration := ""
+
+	for {
 		resp, err := a.chatRequestOnce(msgs, think, tools, nil)
 		if err != nil {
 			return "", turnMsgs, err
 		}
+		if resp.Content != "" {
+			lastNarration = resp.Content
+		}
 		if len(resp.ToolCalls) == 0 {
+			if resp.Content == "" {
+				return lastNarration, turnMsgs, nil
+			}
 			return resp.Content, turnMsgs, nil
 		}
 
 		msgs = append(msgs, resp)
-		queuedReply := ""
+		planCalled := false
+		planEcho := ""
 		for _, tc := range resp.ToolCalls {
 			wailsruntime.EventsEmit(a.ctx, "chat:status", map[string]any{"state": "tool", "tool": tc.Function.Name})
 
@@ -641,8 +692,9 @@ func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.Thin
 				result = fmt.Sprintf("error: %v", herr)
 			} else {
 				slog.Info("tool call", "tool", tc.Function.Name)
-				if tc.Function.Name == "queue_tasks" {
-					queuedReply = result
+				if tc.Function.Name == "manage_plan" {
+					planCalled = true
+					planEcho = result
 				}
 			}
 			msgs = append(msgs, api.Message{Role: "tool", Content: result})
@@ -657,12 +709,28 @@ func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.Thin
 			}))
 		}
 
-		if queuedReply != "" {
-			return queuedReply, turnMsgs, nil
+		if planCalled {
+			// Prefer the model's own accompanying text (its actual explanation
+			// of what it's doing/why) over the tool's mechanical echo of the
+			// plan — the echo is already visible on the persisted "tool" row
+			// above (and in the frontend's tool-call lightbox), so surfacing
+			// it again here as the "assistant" reply just repeats it back
+			// with no added information, and previously clobbered whatever
+			// the model actually said. Fall back to the last non-empty
+			// narration from an earlier round (see lastNarration above)
+			// before finally falling back to the echo, so a real explanation
+			// is never discarded just because the specific round that
+			// dispatched manage_plan happened to carry no text of its own.
+			reply := resp.Content
+			if reply == "" {
+				reply = lastNarration
+			}
+			if reply == "" {
+				reply = planEcho
+			}
+			return reply, turnMsgs, nil
 		}
 	}
-
-	return "", turnMsgs, fmt.Errorf("tool-calling exceeded %d iterations", maxToolIterations)
 }
 
 // persist saves a single message row immediately and returns it as a
@@ -708,6 +776,12 @@ func (a *App) GetSessions() ([]store.Session, error) {
 // GetMessages returns all messages for a given session.
 func (a *App) GetMessages(sessionID string) ([]store.StoredMessage, error) {
 	return a.sess.GetMessages(sessionID)
+}
+
+// GetPlan returns the current plan (see manage_plan) for a given session,
+// empty if none has been created yet.
+func (a *App) GetPlan(sessionID string) ([]store.PlanStep, error) {
+	return a.sess.GetPlan(sessionID)
 }
 
 // SwitchSession changes the active session to an existing one.
