@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -356,34 +357,65 @@ func TestIngestRepoDocs(t *testing.T) {
 		t.Errorf("chunks = %d, expected more from the repo docs", rep.ChunksWritten)
 	}
 
-	// Every stored chunk must have balanced code fences: an odd count means a
-	// fence was split, which is the failure this whole layer exists to prevent.
+	// Chunking must not INTRODUCE an unclosed fence. Comparing against the source
+	// documents matters: a hand-written document can itself contain an unclosed
+	// fence (a prose line that happens to begin with the fence sequence is one per
+	// CommonMark), and that is a defect in the document, not in the chunker. The
+	// invariant is that chunking adds none of its own.
 	rows, err := s.DB().Query(`SELECT id, text FROM memory_chunks`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	bad := 0
+	chunkOpen := 0
 	total := 0
+	var samples []string
 	for rows.Next() {
 		var id, text string
 		if err := rows.Scan(&id, &text); err != nil {
 			t.Fatal(err)
 		}
 		total++
-		if strings.Count(text, "```")%2 != 0 {
-			bad++
-			if bad <= 3 {
-				t.Errorf("chunk %s has an unbalanced code fence:\n%s", id, truncStr(text, 200))
+		if n := unclosedFences(text); n != 0 {
+			chunkOpen += n
+			if len(samples) < 3 {
+				samples = append(samples, id+": "+truncStr(text, 200))
 			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("checked %d chunks for fence balance, %d bad", total, bad)
-	if bad != 0 {
-		t.Errorf("%d chunks split a code fence", bad)
+
+	// How many unclosed fences the source documents themselves contain.
+	sourceOpen := 0
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if !markdownExts[strings.ToLower(filepath.Ext(d.Name()))] {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		b, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		_, body := SplitFrontmatter(string(b))
+		sourceOpen += unclosedFences(body)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("checked %d chunks: %d unclosed fences in chunks, %d in the source documents",
+		total, chunkOpen, sourceOpen)
+	if chunkOpen > sourceOpen {
+		t.Errorf("chunking introduced %d unclosed fence(s) beyond the %d already in the "+
+			"source documents:\n%s", chunkOpen-sourceOpen, sourceOpen, strings.Join(samples, "\n"))
 	}
 
 	// Sanity: heading paths are populated for most chunks.

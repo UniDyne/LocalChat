@@ -756,6 +756,58 @@ func (s *Store) SetChunkEmbeddings(embedModel string, vecs map[string][]float32)
 	return tx.Commit()
 }
 
+// VectorHit is one nearest-neighbour result, carrying enough provenance for the
+// caller to attribute it without a second query.
+type VectorHit struct {
+	ChunkID     string  `json:"chunkId"`
+	SourceID    string  `json:"sourceId"`
+	SourceRef   string  `json:"sourceRef"`
+	SourceType  string  `json:"sourceType"`
+	Title       string  `json:"title"`
+	HeadingPath string  `json:"headingPath"`
+	Text        string  `json:"text"`
+	Similarity  float64 `json:"similarity"`
+}
+
+// NearestChunks ranks chunks by cosine similarity to a query vector, in SQL.
+//
+// array_cosine_distance is 1 - cosine, so ORDER BY it ascending is nearest-first
+// and similarity is 1 - distance. Both verified in Phase 0.5, along with the
+// binding shape: a vector binds as []any of float32 with an explicit
+// ?::FLOAT[384] cast — a plain []float32 is rejected.
+func (s *Store) NearestChunks(query []float32, limit int) ([]VectorHit, error) {
+	if len(query) != EmbedDim {
+		return nil, fmt.Errorf("query vector has %d dims, want %d", len(query), EmbedDim)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.db.Query(`
+		SELECT c.id, c.source_id, s.source_ref, s.source_type, s.title,
+		       c.heading_path, c.text,
+		       1 - array_cosine_distance(c.embedding, ?::FLOAT[384]) AS sim
+		FROM memory_chunks c
+		JOIN memory_sources s ON s.id = c.source_id
+		WHERE c.embedding IS NOT NULL
+		ORDER BY array_cosine_distance(c.embedding, ?::FLOAT[384])
+		LIMIT ?`, vecToAny(query), vecToAny(query), limit)
+	if err != nil {
+		return nil, fmt.Errorf("nearest chunks: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]VectorHit, 0, limit)
+	for rows.Next() {
+		var h VectorHit
+		if err := rows.Scan(&h.ChunkID, &h.SourceID, &h.SourceRef, &h.SourceType,
+			&h.Title, &h.HeadingPath, &h.Text, &h.Similarity); err != nil {
+			return nil, fmt.Errorf("scan hit: %w", err)
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
 // ClearEmbeddings nulls every vector, for use when the embedding model changes.
 // Chunks and their term/entity data are kept — only the vector space is invalid.
 func (s *Store) ClearEmbeddings() error {

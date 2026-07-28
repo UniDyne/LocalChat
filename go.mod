@@ -8,6 +8,7 @@ require (
 	github.com/ollama/ollama v0.30.10
 	github.com/sugarme/tokenizer v0.3.0
 	github.com/wailsapp/wails/v2 v2.12.0
+	github.com/yalue/onnxruntime_go v1.31.0
 )
 
 require (

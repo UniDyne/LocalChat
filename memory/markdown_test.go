@@ -240,3 +240,44 @@ func TestThematicBreakNotFrontmatter(t *testing.T) {
 		t.Error("document content was lost")
 	}
 }
+
+// unclosedFences counts fence-delimiter LINES that are left open in text.
+//
+// Counting occurrences of the ``` substring is not the right invariant: a code
+// fence is a line-level construct, and the sequence can legitimately appear as
+// literal content inside an inline code span or a table cell — which real
+// documentation does. This counts only lines that actually open or close a fence.
+func unclosedFences(text string) int {
+	open := 0
+	var fence string
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if open == 0 {
+			if f, ok := codeFence(trimmed); ok {
+				open, fence = 1, f
+			}
+			continue
+		}
+		if closesFence(trimmed, fence) {
+			open = 0
+		}
+	}
+	return open
+}
+
+func TestUnclosedFencesIgnoresInlineLiterals(t *testing.T) {
+	// A table cell mentioning the fence sequence is not an open fence. This case
+	// comes from the project's own documentation.
+	table := "| File | Contents |\n|---|---|\n| `markdown.go` | fenced code (```" + " and ~~~) |\n"
+	if n := unclosedFences(table); n != 0 {
+		t.Errorf("table with a literal fence sequence in a cell reported %d unclosed fences", n)
+	}
+	// A genuinely unclosed fence is still detected.
+	if n := unclosedFences("```go\nnever closed\n"); n != 1 {
+		t.Errorf("unclosed fence reported %d, want 1", n)
+	}
+	// A balanced fence is balanced.
+	if n := unclosedFences("```go\nx := 1\n```\n"); n != 0 {
+		t.Errorf("balanced fence reported %d, want 0", n)
+	}
+}

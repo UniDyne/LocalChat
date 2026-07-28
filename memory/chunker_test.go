@@ -50,17 +50,13 @@ func TestChunkNeverSplitsCodeOrTable(t *testing.T) {
 
 	chunks := ChunkHeadings(ParseBlocks(md), tc)
 
-	// The fence must appear intact in exactly one chunk: opening and closing
-	// markers together, and no chunk containing only part of it.
+	// No chunk may leave a fence open, and exactly one chunk holds the body.
 	full := 0
 	for _, c := range chunks {
-		opens := strings.Count(c.Text, "```")
-		if opens == 0 {
-			continue
+		if n := unclosedFences(c.Text); n != 0 {
+			t.Errorf("a chunk leaves %d code fence(s) open: %q", n, truncStr(c.Text, 80))
 		}
-		if opens != 2 {
-			t.Errorf("a chunk contains an unbalanced code fence (%d markers): %q", opens, truncStr(c.Text, 80))
-		} else {
+		if strings.Contains(c.Text, "a line of code") {
 			full++
 		}
 	}
