@@ -352,9 +352,20 @@ func (s *Store) ReplaceSource(src MemorySource, chunks []MemoryChunk) (string, e
 		if c.CreatedAt == "" {
 			c.CreatedAt = now
 		}
-		if err := insertChunkTx(tx, *c); err != nil {
-			return "", err
-		}
+	}
+	if err := insertChunksTx(tx, chunks); err != nil {
+		return "", err
+	}
+	// Terms and entity links are written in batches rather than per row. DuckDB
+	// is columnar and its per-statement overhead dominates single-row inserts:
+	// a 219-chunk corpus produces ~20k term rows, which cost ~4.8 ms each as
+	// individual statements — 98 seconds of a 98-second ingest. Batched, the same
+	// work is a few dozen statements.
+	if err := insertChunkTermsTx(tx, chunks); err != nil {
+		return "", err
+	}
+	if err := insertChunkEntitiesTx(tx, chunks); err != nil {
+		return "", err
 	}
 
 	if err := markStatsDirtyTx(tx); err != nil {
@@ -366,8 +377,19 @@ func (s *Store) ReplaceSource(src MemorySource, chunks []MemoryChunk) (string, e
 	return sourceID, nil
 }
 
-func insertChunkTx(tx *sql.Tx, c MemoryChunk) error {
-	if len(c.Embedding) > 0 {
+// insertChunksTx writes chunk rows, batching the common case.
+//
+// Ingestion produces chunks with no vector (Phase 3's embedder fills them in via
+// SetChunkEmbeddings), so the NULL-embedding path is the hot one and is batched.
+// A chunk that arrives with a vector needs the ?::FLOAT[384] cast and is written
+// individually — rare enough that the per-statement cost does not matter.
+func insertChunksTx(tx *sql.Tx, chunks []MemoryChunk) error {
+	var plain []MemoryChunk
+	for _, c := range chunks {
+		if len(c.Embedding) == 0 {
+			plain = append(plain, c)
+			continue
+		}
 		if len(c.Embedding) != EmbedDim {
 			return fmt.Errorf("chunk %s: embedding has %d dims, want %d", c.ID, len(c.Embedding), EmbedDim)
 		}
@@ -380,78 +402,180 @@ func insertChunkTx(tx *sql.Tx, c MemoryChunk) error {
 		); err != nil {
 			return fmt.Errorf("insert chunk %s: %w", c.ID, err)
 		}
-	} else {
-		if _, err := tx.Exec(`
-			INSERT INTO memory_chunks
-				(id, source_id, ord, text, heading_path, token_count, char_len, embedding, embed_model, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-			c.ID, c.SourceID, c.Ord, c.Text, c.HeadingPath, c.TokenCount, c.CharLen,
-			c.EmbedModel, c.CreatedAt,
-		); err != nil {
-			return fmt.Errorf("insert chunk %s: %w", c.ID, err)
-		}
 	}
 
-	for term, tf := range c.Terms {
-		if term == "" || tf <= 0 {
-			continue
-		}
-		if _, err := tx.Exec(
-			`INSERT INTO memory_chunk_terms (chunk_id, term, tf) VALUES (?, ?, ?)
-			 ON CONFLICT (chunk_id, term) DO UPDATE SET tf = excluded.tf`,
-			c.ID, term, tf,
-		); err != nil {
-			return fmt.Errorf("insert chunk term %q: %w", term, err)
+	return execBatches(tx,
+		`memory_chunks (id, source_id, ord, text, heading_path, token_count, char_len, embed_model, created_at)`,
+		9, len(plain),
+		func(i int) []any {
+			c := plain[i]
+			return []any{c.ID, c.SourceID, c.Ord, c.Text, c.HeadingPath,
+				c.TokenCount, c.CharLen, c.EmbedModel, c.CreatedAt}
+		})
+}
+
+// batchRows is how many value tuples go into one INSERT. Large enough to amortize
+// DuckDB's per-statement cost, small enough to keep the statement and its
+// parameter list manageable.
+const batchRows = 400
+
+// insertChunkTermsTx writes every chunk's term frequencies in batched multi-row
+// INSERTs. No conflict handling is needed: ReplaceSource deletes the source's
+// previous chunks first and assigns fresh chunk ids, so (chunk_id, term) cannot
+// collide with an existing row, and a chunk's Terms map cannot collide with
+// itself.
+func insertChunkTermsTx(tx *sql.Tx, chunks []MemoryChunk) error {
+	type row struct {
+		chunkID string
+		term    string
+		tf      int
+	}
+	rows := make([]row, 0, len(chunks)*64)
+	for _, c := range chunks {
+		for term, tf := range c.Terms {
+			if term == "" || tf <= 0 {
+				continue
+			}
+			rows = append(rows, row{c.ID, term, tf})
 		}
 	}
+	return execBatches(tx, "memory_chunk_terms (chunk_id, term, tf)", 3, len(rows),
+		func(i int) []any { return []any{rows[i].chunkID, rows[i].term, rows[i].tf} })
+}
 
-	for _, e := range c.Entities {
-		if e.ValueNorm == "" {
-			continue
+// insertChunkEntitiesTx resolves every distinct entity across the source in one
+// lookup plus one batched insert, then batches the chunk links. Resolving each
+// entity individually would reintroduce the per-statement cost this avoids.
+func insertChunkEntitiesTx(tx *sql.Tx, chunks []MemoryChunk) error {
+	// Collect distinct (kind, value_norm) pairs.
+	type key struct{ kind, value string }
+	distinct := make(map[key]bool)
+	for _, c := range chunks {
+		for _, e := range c.Entities {
+			if e.ValueNorm == "" {
+				continue
+			}
+			distinct[key{e.Kind, e.ValueNorm}] = true
 		}
-		entityID, err := upsertEntityTx(tx, e.Kind, e.ValueNorm)
+	}
+	if len(distinct) == 0 {
+		return nil
+	}
+
+	values := make([]string, 0, len(distinct))
+	for k := range distinct {
+		values = append(values, k.value)
+	}
+
+	// One lookup for everything that already exists. Filtering by value_norm and
+	// matching kind in Go avoids composite-IN portability concerns.
+	existing := make(map[key]string, len(distinct))
+	for start := 0; start < len(values); start += batchRows {
+		end := min(start+batchRows, len(values))
+		batch := values[start:end]
+		ph := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for i, v := range batch {
+			ph[i] = "?"
+			args[i] = v
+		}
+		rows, err := tx.Query(
+			`SELECT id, kind, value_norm FROM memory_entities WHERE value_norm IN (`+
+				strings.Join(ph, ",")+`)`, args...)
 		if err != nil {
+			return fmt.Errorf("lookup entities: %w", err)
+		}
+		for rows.Next() {
+			var id, kind, vn string
+			if err := rows.Scan(&id, &kind, &vn); err != nil {
+				rows.Close()
+				return err
+			}
+			existing[key{kind, vn}] = id
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
 			return err
 		}
-		count := e.Count
-		if count <= 0 {
-			count = 1
+	}
+
+	// Insert the ones that are new, assigning ids up front.
+	type newEnt struct {
+		id, kind, value string
+	}
+	var fresh []newEnt
+	for k := range distinct {
+		if _, ok := existing[k]; ok {
+			continue
 		}
-		extractor := e.Extractor
-		if extractor == "" {
-			extractor = "heuristic"
+		id := uuid.New().String()
+		existing[k] = id
+		fresh = append(fresh, newEnt{id, k.kind, k.value})
+	}
+	if err := execBatches(tx, "memory_entities (id, kind, value_norm)", 3, len(fresh),
+		func(i int) []any { return []any{fresh[i].id, fresh[i].kind, fresh[i].value} }); err != nil {
+		return err
+	}
+
+	// Link rows. A chunk may list the same entity twice only if the extractor
+	// produced duplicates, which ExtractEntities already collapses; dedupe here
+	// anyway so a caller cannot trip the primary key.
+	type link struct {
+		chunkID, entityID, extractor string
+		count                        int
+	}
+	seen := make(map[[2]string]bool)
+	var links []link
+	for _, c := range chunks {
+		for _, e := range c.Entities {
+			if e.ValueNorm == "" {
+				continue
+			}
+			id := existing[key{e.Kind, e.ValueNorm}]
+			pair := [2]string{c.ID, id}
+			if seen[pair] {
+				continue
+			}
+			seen[pair] = true
+			count := e.Count
+			if count <= 0 {
+				count = 1
+			}
+			extractor := e.Extractor
+			if extractor == "" {
+				extractor = "heuristic"
+			}
+			links = append(links, link{c.ID, id, extractor, count})
 		}
-		if _, err := tx.Exec(`
-			INSERT INTO memory_chunk_entities (chunk_id, entity_id, count, extractor)
-			VALUES (?, ?, ?, ?)
-			ON CONFLICT (chunk_id, entity_id) DO UPDATE SET
-				count = excluded.count, extractor = excluded.extractor`,
-			c.ID, entityID, count, extractor,
-		); err != nil {
-			return fmt.Errorf("link chunk entity: %w", err)
+	}
+	return execBatches(tx, "memory_chunk_entities (chunk_id, entity_id, count, extractor)", 4, len(links),
+		func(i int) []any {
+			return []any{links[i].chunkID, links[i].entityID, links[i].count, links[i].extractor}
+		})
+}
+
+// execBatches issues multi-row INSERTs over n logical rows, cols values each,
+// obtaining each row's arguments from argsAt.
+func execBatches(tx *sql.Tx, target string, cols, n int, argsAt func(i int) []any) error {
+	if n == 0 {
+		return nil
+	}
+	tuple := "(" + strings.TrimSuffix(strings.Repeat("?,", cols), ",") + ")"
+	for start := 0; start < n; start += batchRows {
+		end := min(start+batchRows, n)
+		count := end - start
+		tuples := make([]string, count)
+		args := make([]any, 0, count*cols)
+		for i := 0; i < count; i++ {
+			tuples[i] = tuple
+			args = append(args, argsAt(start+i)...)
+		}
+		q := `INSERT INTO ` + target + ` VALUES ` + strings.Join(tuples, ",")
+		if _, err := tx.Exec(q, args...); err != nil {
+			return fmt.Errorf("batch insert into %s: %w", target, err)
 		}
 	}
 	return nil
-}
-
-func upsertEntityTx(tx *sql.Tx, kind, valueNorm string) (string, error) {
-	var id string
-	err := tx.QueryRow(
-		`SELECT id FROM memory_entities WHERE kind = ? AND value_norm = ?`, kind, valueNorm,
-	).Scan(&id)
-	if err == nil {
-		return id, nil
-	}
-	if err != sql.ErrNoRows {
-		return "", fmt.Errorf("lookup entity: %w", err)
-	}
-	id = uuid.New().String()
-	if _, err := tx.Exec(
-		`INSERT INTO memory_entities (id, kind, value_norm) VALUES (?, ?, ?)`, id, kind, valueNorm,
-	); err != nil {
-		return "", fmt.Errorf("insert entity: %w", err)
-	}
-	return id, nil
 }
 
 // deleteChunksForSourceTx removes a source's chunks and everything hanging off
@@ -557,6 +681,50 @@ func (s *Store) ChunksMissingEmbedding(limit int) ([]MemoryChunk, error) {
 		var c MemoryChunk
 		if err := rows.Scan(&c.ID, &c.SourceID, &c.Ord, &c.Text, &c.HeadingPath, &c.TokenCount); err != nil {
 			return nil, fmt.Errorf("scan chunk: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// CandidateChunksByTerms returns chunks sharing any of the given terms, for
+// ingest-side near-duplicate detection. Chunks belonging to excludeSourceRef are
+// omitted so re-ingesting a file does not see its own previous chunks as
+// duplicates of themselves.
+//
+// Preselecting by rare terms is what keeps dedup cheap: comparing every new chunk
+// against the whole corpus would make ingestion quadratic in corpus size.
+func (s *Store) CandidateChunksByTerms(terms []string, limit int, excludeSourceRef string) ([]MemoryChunk, error) {
+	if len(terms) == 0 || limit <= 0 {
+		return nil, nil
+	}
+	ph := make([]string, len(terms))
+	args := make([]any, 0, len(terms)+2)
+	for i, t := range terms {
+		ph[i] = "?"
+		args = append(args, t)
+	}
+	args = append(args, excludeSourceRef, limit)
+
+	rows, err := s.db.Query(`
+		SELECT c.id, c.source_id, c.text
+		FROM memory_chunks c
+		JOIN memory_sources s ON s.id = c.source_id
+		WHERE c.id IN (
+			SELECT chunk_id FROM memory_chunk_terms WHERE term IN (`+strings.Join(ph, ",")+`)
+		)
+		AND s.source_ref <> ?
+		LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query dedup candidates: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]MemoryChunk, 0, limit)
+	for rows.Next() {
+		var c MemoryChunk
+		if err := rows.Scan(&c.ID, &c.SourceID, &c.Text); err != nil {
+			return nil, fmt.Errorf("scan candidate: %w", err)
 		}
 		out = append(out, c)
 	}

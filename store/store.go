@@ -96,10 +96,20 @@ func Path() string {
 	return "./sessions.db"
 }
 
-// Open opens (or creates) the DuckDB database and ensures tables exist.
-// Returns a ready Store with an active session selected or auto-created.
-func Open() (*Store, error) {
-	db, err := sql.Open("duckdb", Path())
+// Open opens (or creates) the DuckDB database at the default location and
+// ensures tables exist. Returns a ready Store with an active session selected or
+// auto-created.
+func Open() (*Store, error) { return OpenAt(Path()) }
+
+// DB exposes the underlying handle. Intended for tests and for ad-hoc queries in
+// the memory layer that do not warrant a dedicated method; ordinary callers
+// should use the typed methods so access stays serialized and consistent.
+func (s *Store) DB() *sql.DB { return s.db }
+
+// OpenAt opens (or creates) the database at an explicit path. Open uses this with
+// the default location; tests use it directly to work against a temporary file.
+func OpenAt(path string) (*Store, error) {
+	db, err := sql.Open("duckdb", path)
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
