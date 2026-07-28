@@ -13,10 +13,10 @@ import (
 
 // Session is a stored session record.
 type Session struct {
-	ID             string `json:"id"`
-	Title          string `json:"title"`
-	CreatedAt      string `json:"createdAt"`
-	MessageCount int  `json:"messageCount"`
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	CreatedAt    string `json:"createdAt"`
+	MessageCount int    `json:"messageCount"`
 }
 
 // StoredMessage is a message retrieved from the database.
@@ -37,14 +37,14 @@ type StoredMessage struct {
 // Role is one of "user", "assistant", "cot" (a hidden chain-of-thought
 // evaluation pass), or "tool" (a single tool call/result).
 type NewMessage struct {
-	Role        string
-	Content     string
-	Model       string
-	Mode        string
-	Pinned      bool
-	ToolName    string
-	ToolArgs    string
-	ToolResult  string
+	Role       string
+	Content    string
+	Model      string
+	Mode       string
+	Pinned     bool
+	ToolName   string
+	ToolArgs   string
+	ToolResult string
 }
 
 // PlanStep is one step of a session's plan (see the manage_plan tool).
@@ -76,8 +76,8 @@ type Artifact struct {
 
 // Store wraps DuckDB-backed session storage and provides thread-safe access.
 type Store struct {
-	db *sql.DB
-	mu sync.Mutex
+	db             *sql.DB
+	mu             sync.Mutex
 	currentSession string
 }
 
@@ -105,7 +105,39 @@ func Open() (*Store, error) {
 
 	s := &Store{db: db}
 
-	createSQL := `
+	if _, err := db.Exec(schemaSQL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create tables: %w", err)
+	}
+
+	// Pick an existing session or create one.
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&count)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("count sessions: %w", err)
+	}
+
+	if count == 0 {
+		id := s.createSessionInternal("", true)
+		s.currentSession = id
+	} else {
+		err = db.QueryRow(
+			"SELECT id FROM sessions ORDER BY created_at DESC LIMIT 1",
+		).Scan(&s.currentSession)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("select latest session: %w", err)
+		}
+	}
+
+	return s, nil
+}
+
+// schemaSQL is the full schema, applied idempotently on every Open. Kept as a
+// package-level constant so tests can build a store against a temporary path
+// without duplicating the DDL.
+const schemaSQL = `
 CREATE TABLE IF NOT EXISTS sessions (
 	id        TEXT PRIMARY KEY,
 	title     TEXT NOT NULL DEFAULT '',
@@ -141,35 +173,6 @@ CREATE TABLE IF NOT EXISTS plan_steps (
 	updated_at TIMESTAMP NOT NULL,
 	PRIMARY KEY (session_id, seq)
 );`
-
-	if _, err := db.Exec(createSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create tables: %w", err)
-	}
-
-	// Pick an existing session or create one.
-	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&count)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("count sessions: %w", err)
-	}
-
-	if count == 0 {
-		id := s.createSessionInternal("", true)
-		s.currentSession = id
-	} else {
-		err = db.QueryRow(
-			"SELECT id FROM sessions ORDER BY created_at DESC LIMIT 1",
-		).Scan(&s.currentSession)
-		if err != nil {
-			db.Close()
-			return nil, fmt.Errorf("select latest session: %w", err)
-		}
-	}
-
-	return s, nil
-}
 
 // Close shuts down the underlying database connection.
 func (s *Store) Close() error {

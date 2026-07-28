@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	_ "github.com/marcboeker/go-duckdb"
+	_ "github.com/marcboeker/go-duckdb/v2"
 	"github.com/ollama/ollama/api"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"simple-cot-chat/store"
