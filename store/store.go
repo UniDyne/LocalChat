@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -109,6 +110,23 @@ func Open() (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("create tables: %w", err)
 	}
+	if _, err := db.Exec(memorySchemaSQL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create memory tables: %w", err)
+	}
+	if err := s.SetMeta(MetaSchemaVersion, MemorySchemaVersion); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	// One-time (idempotent) repair of artifacts left behind by the pre-cascade
+	// DeleteSession — see cleanupOrphanedArtifacts. Logged, not silent.
+	if n, err := s.cleanupOrphanedArtifacts(); err != nil {
+		db.Close()
+		return nil, err
+	} else if n > 0 {
+		slog.Info("removed orphaned artifacts whose session no longer exists", "count", n)
+	}
 
 	// Pick an existing session or create one.
 	var count int
@@ -213,8 +231,21 @@ func (s *Store) SwitchSession(id string) error {
 	return nil
 }
 
-// DeleteSession removes a session and its messages. If it was the current
-// session, create a fresh replacement so there's always an active session.
+// DeleteSession removes a session, its messages, plan, artifacts, and every
+// piece of memory derived from any of them.
+//
+// Two behaviors worth calling out. First, artifacts now cascade: previously they
+// carried a session_id but were never deleted, so they survived as orphans —
+// unintentional, and fixed here (see cleanupOrphanedArtifacts for the one-time
+// repair of rows already orphaned). Second, memory derived from this session
+// dies with it, while directory-sourced memory is untouched because it has no
+// session_id — that asymmetry is deliberate.
+//
+// Ordering matters: memory rows are removed before the artifacts they were
+// derived from, so the cascade can still resolve source_ref -> artifact.
+//
+// If the deleted session was current, a fresh replacement is created so there is
+// always an active session.
 func (s *Store) DeleteSession(id string) error {
 	var exists bool
 	err := s.db.QueryRow(
@@ -234,6 +265,13 @@ func (s *Store) DeleteSession(id string) error {
 	wasCurrent := s.currentSession == id
 	s.mu.Unlock()
 
+	// Memory first, while the artifacts it was derived from still exist.
+	if err := deleteMemoryForSessionTx(tx, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM artifacts WHERE session_id = ?", id); err != nil {
+		return fmt.Errorf("delete artifacts: %w", err)
+	}
 	if _, err := tx.Exec("DELETE FROM messages WHERE session_id = ?", id); err != nil {
 		return fmt.Errorf("delete messages: %w", err)
 	}
@@ -242,6 +280,12 @@ func (s *Store) DeleteSession(id string) error {
 	}
 	if _, err := tx.Exec("DELETE FROM sessions WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete session: %w", err)
+	}
+	// The corpus shrank, so BM25's df/N/avgdl now describe a corpus that no
+	// longer exists. Recompute lazily on next search rather than trying to
+	// decrement correctly here.
+	if err := markStatsDirtyTx(tx); err != nil {
+		return err
 	}
 
 	if wasCurrent {
