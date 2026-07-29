@@ -186,12 +186,17 @@ to sensible defaults if it's missing):
 The Ollama endpoint can also be overridden with the `OLLAMA_HOST` environment
 variable, which takes precedence over `config.json`.
 
-`extract_model` selects the model used by the memory subsystem's entity
+`extract_model` selects the model used by the memory subsystem's optional entity
 extraction pass, which reads each ingested note once and names the people,
-organisations, paths and identifiers in it. Leave it empty to disable that pass
-entirely — memory still works, using pattern-based extraction only. Set it to a
-small model rather than the chat model: extraction is a much easier task than
-reasoning, and it runs once per note.
+organisations, paths and identifiers in it.
+
+**Empty is the default and the recommendation.** Memory works without it, using
+pattern-based extraction; the LLM pass is built and tested but its measured
+contribution to retrieval so far is one query in fifty, which is inside the
+noise. It also costs one model call per note, so on a large vault it is hours of
+background work. Turn it on only if you want to experiment — and if you do, use a
+small model rather than the chat model, since extraction is a much easier task
+than reasoning.
 
 ### Running in development
 
