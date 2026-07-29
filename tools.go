@@ -32,6 +32,12 @@ func (a *App) toolRegistry() []ToolDef {
 		a.getArtifactTool(),
 		a.managePlanTool(),
 	}
+	// search_memory is offered only once memory holds something. Same reasoning as
+	// hasWorkDir gating the file tools: advertising a tool that can only return
+	// nothing wastes a turn and teaches the model the tool is useless.
+	if a.hasMemory() {
+		tools = append(tools, a.searchMemoryTool())
+	}
 	if a.hasWorkDir() {
 		tools = append(tools, a.listFilesTool(), a.readFileTool(), a.writeFileTool(), a.updateFileTool())
 	}

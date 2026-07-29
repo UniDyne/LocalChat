@@ -17,6 +17,7 @@ import (
 	_ "github.com/marcboeker/go-duckdb/v2"
 	"github.com/ollama/ollama/api"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"simple-cot-chat/memory"
 	"simple-cot-chat/store"
 )
 
@@ -31,6 +32,10 @@ const (
 type config struct {
 	OllamaEndpoint string `json:"ollama_endpoint"`
 	Model          string `json:"model"`
+	// ExtractModel names the model for memory's LLM entity pass. Separate from Model
+	// on purpose: extraction is a far easier task than chat, so it should run on a
+	// smaller model. Empty leaves the pass disabled, and memory works without it.
+	ExtractModel string `json:"extract_model"`
 }
 
 func loadConfig() *config {
@@ -78,12 +83,24 @@ type App struct {
 	// sandboxed to. Empty means no directory is selected, which disables the
 	// file tools entirely — see hasWorkDir/toolRegistry.
 	workDir string
+
+	// mem is the memory subsystem. Non-nil once startup has run; embeddings may
+	// still be unavailable inside it, which is a reported state rather than an
+	// error — see memory.System.
+	mem *memory.System
+
+	// extractModel is the model memory's entity pass uses, from config.json. Empty
+	// leaves that pass disabled.
+	extractModel string
 }
 
 // NewApp creates a new App with defaults.
 func NewApp() *App {
 	cfg := loadConfig()
-	return &App{addr: cfg.OllamaEndpoint, model: cfg.Model, mode: CotModeNone}
+	return &App{
+		addr: cfg.OllamaEndpoint, model: cfg.Model, mode: CotModeNone,
+		extractModel: cfg.ExtractModel,
+	}
 }
 
 // startup is called when the app starts — saves context and initializes Ollama client + DB.
@@ -112,6 +129,139 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.sess = ds
 	slog.Info("session store initialized")
+
+	// Memory never blocks startup. NewSystem reports an unprovisioned model or a
+	// missing ONNX Runtime as a state rather than an error, so the app is fully
+	// usable either way and retrieval simply falls back to its non-vector signals.
+	a.mem = memory.NewSystem(ds, memory.Config{
+		OllamaClient: a.cli,
+		ExtractModel: a.extractModel,
+	}, func(p memory.Progress) {
+		wailsruntime.EventsEmit(a.ctx, "memory:progress", p)
+	})
+	if a.mem.EmbeddingsAvailable() {
+		slog.Info("memory ready", "chunker", a.mem.Ingester.ChunkerName(),
+			"tokenizer", a.mem.Ingester.TokenCounterName())
+	} else {
+		slog.Warn("memory ready without embeddings", "reason", a.mem.UnavailableReason())
+	}
+}
+
+// shutdown releases the memory subsystem. Wired from main.go's OnShutdown.
+func (a *App) shutdown(context.Context) {
+	if a.mem != nil {
+		if err := a.mem.Close(); err != nil {
+			slog.Warn("memory shutdown", "error", err)
+		}
+	}
+	if a.sess != nil {
+		if err := a.sess.Close(); err != nil {
+			slog.Warn("store shutdown", "error", err)
+		}
+	}
+}
+
+// hasMemory reports whether memory holds anything worth searching. Gates the
+// search_memory tool: an empty corpus can only return nothing.
+func (a *App) hasMemory() bool {
+	if a.mem == nil {
+		return false
+	}
+	st, err := a.mem.Store.MemoryStats()
+	if err != nil {
+		return false
+	}
+	return st.Chunks > 0
+}
+
+// MemoryStatus reports subsystem state for the UI, including why embeddings are off
+// when they are.
+func (a *App) MemoryStatus() (memory.Status, error) {
+	if a.mem == nil {
+		return memory.Status{}, fmt.Errorf("memory not initialized")
+	}
+	return a.mem.Status()
+}
+
+// IngestDirectory queues a directory scan. Returns immediately: the work runs on the
+// memory queue's single worker so it cannot stall a chat turn.
+func (a *App) IngestDirectory(path string) (bool, error) {
+	if a.mem == nil {
+		return false, fmt.Errorf("memory not initialized")
+	}
+	if path == "" {
+		return false, fmt.Errorf("no directory given")
+	}
+	return a.mem.EnqueueDirectoryIngest(path, func(rep memory.IngestReport) {
+		wailsruntime.EventsEmit(a.ctx, "memory:ingested", rep)
+	})
+}
+
+// SearchMemoryManual runs a search for the UI. Separate from the tool so retrieval
+// quality can be inspected directly, which is also the control for measuring how
+// often the model actually invokes the tool.
+func (a *App) SearchMemoryManual(query string, limit int) ([]memory.Result, error) {
+	if a.mem == nil {
+		return nil, fmt.Errorf("memory not initialized")
+	}
+	results, _, err := a.mem.Search(context.Background(), query, memory.SearchOptions{
+		Limit: limit, Explain: true, Expand: true,
+	})
+	return results, err
+}
+
+// EnrichMemoryEntities queues the LLM entity pass over sources that have not had it.
+//
+// User-initiated rather than automatic, unlike the per-turn ingestion of Phase 7: the
+// pass makes one model call per note, so on a real vault it is minutes-to-hours of
+// background work — not something to start unasked.
+//
+// Returns as soon as the first batch is queued. The pass then chains batches through
+// the queue until nothing is pending, yielding to ingestion between them, so this is a
+// "start it" call rather than a "run it all" call. limit caps one batch; 0 uses the
+// default.
+func (a *App) EnrichMemoryEntities(limit int) (bool, error) {
+	if a.mem == nil {
+		return false, fmt.Errorf("memory not initialized")
+	}
+	return a.mem.EnqueueEnrichment(limit, func(rep memory.EnrichReport) {
+		wailsruntime.EventsEmit(a.ctx, "memory:enriched", rep)
+	})
+}
+
+// RollbackMemoryEntityEnrichment removes every association the LLM tier produced and
+// marks each source pending again.
+//
+// Exposed because the `extractor` provenance column exists precisely so this is
+// possible: if a model turns out to extract badly, the whole tier can go without
+// disturbing the heuristic and tag entities search has always used.
+func (a *App) RollbackMemoryEntityEnrichment() (int64, error) {
+	if a.mem == nil {
+		return 0, fmt.Errorf("memory not initialized")
+	}
+	n, err := a.mem.Store.DeleteChunkEntitiesByExtractor(memory.ExtractorLLM)
+	if err != nil {
+		return 0, err
+	}
+	if err := a.mem.Store.ResetEntityPass(); err != nil {
+		return n, err
+	}
+	slog.Info("rolled back the LLM entity tier", "associations_removed", n)
+	return n, nil
+}
+
+// RebuildMemoryEdges queues an edge rebuild. Exposed because the similarity pass
+// needs vectors: a corpus ingested before the model was provisioned has its
+// sequential and link edges but no similarity graph, and this is what fills it in
+// without re-ingesting.
+//
+// Link edges are not rebuilt here — resolving them needs the vault index that only
+// exists during a directory walk. Re-run the ingest to refresh those.
+func (a *App) RebuildMemoryEdges() (bool, error) {
+	if a.mem == nil {
+		return false, fmt.Errorf("memory not initialized")
+	}
+	return a.mem.EnqueueEdgeBuild(nil)
 }
 
 // GetModel returns the currently selected model name.
@@ -576,7 +726,43 @@ func (a *App) SendChat(userMsg string, history []ChatMessage, queuedByTool strin
 	}
 	turnMsgs = append(turnMsgs, a.persist(sessionID, store.NewMessage{Role: "assistant", Content: fullReply, Model: a.model, Mode: mode, Pinned: pinned}))
 
+	a.enqueueTurnMemory(sessionID)
+
 	return ChatTurnResult{Messages: turnMsgs}, nil
+}
+
+// enqueueTurnMemory queues this session's turns for ingestion into memory.
+//
+// Deliberately the last thing SendChat does, and deliberately non-blocking: the
+// queue's single worker does the chunking and embedding, so the only cost on the
+// chat turn is one mutex-guarded append. A failure here must never surface as a
+// failed chat turn — the reply is already persisted and returned — so it is logged
+// and dropped.
+//
+// Placed after the assistant row is persisted rather than before, because the
+// ingestion unit is the *pair*: a job that ran a moment earlier would find a user
+// message with no reply and skip it.
+func (a *App) enqueueTurnMemory(sessionID string) {
+	if a.mem == nil || sessionID == "" {
+		return
+	}
+	title := ""
+	if sessions, err := a.sess.GetSessions(); err == nil {
+		for _, s := range sessions {
+			if s.ID == sessionID {
+				title = s.Title
+				break
+			}
+		}
+	}
+	// The messages are loaded inside the job, on the worker goroutine — reading them
+	// here would put a query on the chat turn's path for no reason, and the job may
+	// run after further turns have landed anyway.
+	if _, err := a.mem.EnqueueTurnIngest(sessionID, title, func() ([]store.StoredMessage, error) {
+		return a.sess.GetMessages(sessionID)
+	}); err != nil {
+		slog.Warn("could not queue conversation for memory", "session", sessionID, "error", err)
+	}
 }
 
 // titleFromMessage derives a short session title by collapsing a message to a single

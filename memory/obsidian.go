@@ -122,6 +122,10 @@ type Link struct {
 	Alias string
 	// Embed is true for transclusions (![[...]]).
 	Embed bool
+	// Raw is the link exactly as written. Edge building uses it to find which
+	// chunk of the source note contains the link, so the edge leaves the chunk
+	// that made the assertion rather than the note's first chunk.
+	Raw string
 }
 
 var (
@@ -142,6 +146,7 @@ func ExtractLinks(text string) []Link {
 		l := Link{
 			Embed:  m[1] == "!",
 			Target: strings.TrimSpace(m[2]),
+			Raw:    m[0],
 		}
 		if m[3] != "" {
 			l.Heading = strings.TrimSpace(strings.TrimPrefix(m[3], "#"))
@@ -168,7 +173,7 @@ func ExtractLinks(text string) []Link {
 			!strings.HasSuffix(strings.ToLower(target), ".markdown") {
 			continue
 		}
-		out = append(out, Link{Target: target, Heading: heading, Alias: m[1]})
+		out = append(out, Link{Target: target, Heading: heading, Alias: m[1], Raw: m[0]})
 	}
 	return out
 }

@@ -176,7 +176,8 @@ to sensible defaults if it's missing):
 ```json
 {
   "ollama_endpoint": "http://localhost:11434",
-  "model": "qwen3.5:9b"
+  "model": "qwen3.5:9b",
+  "extract_model": ""
 }
 ```
 
@@ -184,6 +185,13 @@ to sensible defaults if it's missing):
 
 The Ollama endpoint can also be overridden with the `OLLAMA_HOST` environment
 variable, which takes precedence over `config.json`.
+
+`extract_model` selects the model used by the memory subsystem's entity
+extraction pass, which reads each ingested note once and names the people,
+organisations, paths and identifiers in it. Leave it empty to disable that pass
+entirely — memory still works, using pattern-based extraction only. Set it to a
+small model rather than the chat model: extraction is a much easier task than
+reasoning, and it runs once per note.
 
 ### Running in development
 

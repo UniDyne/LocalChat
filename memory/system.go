@@ -28,6 +28,19 @@ type Config struct {
 	OllamaEmbedDims int
 	// Embedder injects an embedder directly, bypassing resolution. Used by tests.
 	Embedder Embedder
+
+	// ExtractModel names the model for the LLM entity pass. Separate from the chat
+	// model on purpose: extraction is a far easier task than reasoning, so paying
+	// 27B rates for it is waste (§3.3). Empty disables the pass.
+	ExtractModel string
+	// ExtractNumCtx sizes the extraction context window; 0 picks a default. A whole
+	// note is much larger than a chat turn, and a too-small window truncates it
+	// silently.
+	ExtractNumCtx int
+	// Extractor injects an extractor directly, bypassing resolution. Used by tests —
+	// the guards, attribution and link resolution are where the bugs are, and none of
+	// them need a model.
+	Extractor EntityExtractor
 }
 
 // System owns the memory subsystem: storage, the ingestion queue, the chunker and
@@ -45,6 +58,7 @@ type System struct {
 	mu          sync.RWMutex
 	embedder    Embedder
 	unavailable error
+	extractor   EntityExtractor
 }
 
 // NewSystem wires the subsystem together, degrading gracefully.
@@ -63,6 +77,20 @@ func NewSystem(s *store.Store, cfg Config, onProgress func(Progress)) *System {
 		sys.embedder = emb
 		if err := sys.recordModel(emb); err != nil {
 			slog.Warn("could not record embedding model metadata", "error", err)
+		}
+	}
+
+	// The entity pass is optional and independent: without it, search runs on
+	// heuristic entities exactly as it did before Phase 8.
+	if cfg.Extractor != nil {
+		sys.extractor = cfg.Extractor
+	} else if cfg.OllamaClient != nil && cfg.ExtractModel != "" {
+		ext, err := NewOllamaExtractor(cfg.OllamaClient, cfg.ExtractModel, cfg.ExtractNumCtx)
+		if err != nil {
+			slog.Warn("entity extraction unavailable", "reason", err.Error())
+		} else {
+			sys.extractor = ext
+			slog.Info("entity extraction configured", "model", cfg.ExtractModel)
 		}
 	}
 	sys.Queue.Start()
@@ -154,6 +182,73 @@ func (sys *System) Embedder() Embedder {
 	return sys.embedder
 }
 
+// Extractor returns the active entity extractor, or nil when the LLM pass is not
+// configured.
+func (sys *System) Extractor() EntityExtractor {
+	sys.mu.RLock()
+	defer sys.mu.RUnlock()
+	return sys.extractor
+}
+
+// SetExtractor installs an extractor after construction.
+func (sys *System) SetExtractor(ext EntityExtractor) {
+	sys.mu.Lock()
+	sys.extractor = ext
+	sys.mu.Unlock()
+}
+
+// EnqueueEnrichment queues the LLM entity pass, in batches.
+//
+// It runs on the same single-worker queue as ingestion — it must, since two concurrent
+// writers hit DuckDB write-write conflicts — which creates a tension with the plan's
+// "ingestion and search never wait on it": a full pass over a vault is one model call
+// per note, so an unbounded job would hold the only worker for hours and every
+// conversation turn and directory scan queued behind it would simply wait.
+//
+// Resolved by processing EnrichBatch sources and then **re-enqueueing itself** if more
+// remain. Anything queued in the meantime runs between batches, so ingestion stays
+// responsive while enrichment makes steady progress. This works because the pass is
+// resumable: each batch picks up exactly where the last left off, and the queue's key
+// dedup is released once a job starts running, so the re-enqueue is never dropped.
+//
+// limit caps a single batch (0 uses EnrichBatch).
+func (sys *System) EnqueueEnrichment(limit int, onDone func(EnrichReport)) (bool, error) {
+	if sys.Extractor() == nil {
+		return false, &ErrUnavailable{Reason: "entity extraction is not configured"}
+	}
+	if limit <= 0 {
+		limit = EnrichBatch
+	}
+	return sys.Queue.Enqueue(Job{
+		Kind: "entities",
+		Key:  "entities",
+		Run: func(ctx context.Context) error {
+			rep, err := sys.Enrich(ctx, limit, nil)
+			// Report even on failure: a partial run's guard counts are the most useful
+			// diagnostic there is, and discarding them on error would hide exactly the
+			// case worth looking at.
+			if onDone != nil {
+				onDone(rep)
+			}
+			if err != nil {
+				return err
+			}
+			if rep.SourcesTried > 0 {
+				slog.Info("entity enrichment batch complete", "report", rep.String())
+			}
+			// More to do? Queue the next batch and let anything waiting go first.
+			// Guarded on progress rather than on remaining count: a batch that tried
+			// sources but completed none would otherwise re-enqueue forever.
+			if rep.SourcesTried >= limit && rep.SourcesDone+rep.SourcesFailed > 0 {
+				if _, err := sys.EnqueueEnrichment(limit, onDone); err != nil {
+					slog.Warn("could not queue the next enrichment batch", "error", err)
+				}
+			}
+			return nil
+		},
+	})
+}
+
 // SetEmbedder installs an embedder after construction — the path taken when the
 // user provisions the model from the UI without restarting the app.
 func (sys *System) SetEmbedder(emb Embedder) error {
@@ -184,6 +279,15 @@ type Status struct {
 	TokenCounter        string            `json:"tokenCounter"`
 	Queue               Progress          `json:"queue"`
 	Corpus              store.MemoryStats `json:"corpus"`
+	// ExtractModel names the entity-extraction model, or "" when the pass is off.
+	ExtractModel string `json:"extractModel"`
+	// EntityPass counts sources per enrichment state, so progress is visible rather
+	// than inferred from a spinner.
+	EntityPass map[string]int `json:"entityPass"`
+	// EdgesByKind breaks the graph down per edge kind. The total alone hides the
+	// thing worth knowing: a corpus with 40k similarity edges and no link edges is
+	// a very different graph from the reverse.
+	EdgesByKind map[string]int `json:"edgesByKind"`
 }
 
 // Status reports subsystem state, including why embeddings are off when they are.
@@ -192,12 +296,27 @@ func (sys *System) Status() (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	byKind, err := sys.Store.EdgeCountsByKind()
+	if err != nil {
+		return Status{}, err
+	}
+	passes, err := sys.Store.CountSourcesByEntityPass()
+	if err != nil {
+		return Status{}, err
+	}
+	extModel := ""
+	if ext := sys.Extractor(); ext != nil {
+		extModel = ext.ModelName()
+	}
 	return Status{
 		EmbeddingsAvailable: sys.EmbeddingsAvailable(),
 		UnavailableReason:   sys.UnavailableReason(),
 		TokenCounter:        sys.Ingester.TokenCounterName(),
 		Queue:               sys.Queue.Progress(),
 		Corpus:              st,
+		EdgesByKind:         byKind,
+		ExtractModel:        extModel,
+		EntityPass:          passes,
 	}, nil
 }
 
@@ -224,6 +343,150 @@ func (sys *System) EnqueueDirectoryIngest(root string, onIngest func(IngestRepor
 				}
 				slog.Info("embedding backfill complete", "report", br.String())
 			}
+			// Edges come last because the similarity pass needs the vectors the
+			// backfill just wrote. The link and sequential passes do not, so an
+			// unprovisioned model still yields a traversable graph — just without
+			// its similarity edges.
+			//
+			// Incremental when the run changed only part of the vault, full when it
+			// is a first ingest. The distinction matters: a full pass is O(chunks ×
+			// corpus) in the similarity stage, which is minutes on a vault and
+			// entirely wasted after a two-file edit.
+			switch {
+			case rep.FilesIngested == 0 && rep.FilesDeleted == 0:
+				// Nothing changed. Rebuilding would burn the whole similarity pass to
+				// arrive at the graph already stored, which is precisely the no-op a
+				// re-scan is supposed to be.
+				slog.Info("no changes; edges left as they are", "root", root)
+				return nil
+			case rep.Incremental() || rep.FilesDeleted > 0:
+				er, err := sys.BuildEdgesIncremental(ctx, rep, EdgeParams{})
+				if err != nil {
+					return err
+				}
+				slog.Info("incremental edge build complete", "report", er.String())
+				return nil
+			}
+			er, err := sys.BuildEdges(ctx, sys.Ingester.Links, EdgeParams{})
+			if err != nil {
+				return err
+			}
+			slog.Info("edge build complete", "report", er.String())
+			return nil
+		},
+	})
+}
+
+// EnqueueTurnIngest queues one session's conversation turns for ingestion, then
+// embeds and links what it wrote.
+//
+// Keyed by session id, so a rapid series of turns coalesces into one job instead of
+// piling up: `Queue.Enqueue` is a no-op when the key is already queued, and
+// IngestTurns skips turns already stored unchanged, so the coalesced job simply
+// picks up whatever has accumulated.
+//
+// This must never run on the chat turn's goroutine: ingesting inline would put
+// chunking and embedding in the path of the reply the user is waiting for, and behind
+// the store's write mutex, in the path of the next SaveMessage too. Measured at
+// 7 µs to enqueue against 1.79 s to ingest 40 turns.
+func (sys *System) EnqueueTurnIngest(sessionID, title string, load func() ([]store.StoredMessage, error)) (bool, error) {
+	if sessionID == "" {
+		return false, fmt.Errorf("session id is required")
+	}
+	return sys.Queue.Enqueue(Job{
+		Kind: "conversation",
+		Key:  "conversation:" + sessionID,
+		Run: func(ctx context.Context) error {
+			msgs, err := load()
+			if err != nil {
+				return err
+			}
+			rep, err := sys.Ingester.IngestTurns(ctx, sessionID, title, msgs)
+			if err != nil {
+				return err
+			}
+			if rep.TurnsIngested == 0 {
+				return nil
+			}
+			slog.Info("conversation ingest complete", "report", rep.String())
+			return sys.finishIngest(ctx, IngestReport{ChangedSourceIDs: rep.SourceIDs})
+		},
+	})
+}
+
+// EnqueueArtifactIngest queues one artifact for ingestion.
+func (sys *System) EnqueueArtifactIngest(load func() (store.Artifact, error), artifactID string) (bool, error) {
+	if artifactID == "" {
+		return false, fmt.Errorf("artifact id is required")
+	}
+	return sys.Queue.Enqueue(Job{
+		Kind: "artifact",
+		Key:  "artifact:" + artifactID,
+		Run: func(ctx context.Context) error {
+			art, err := load()
+			if err != nil {
+				return err
+			}
+			n, err := sys.Ingester.IngestArtifact(ctx, art)
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return nil
+			}
+			slog.Info("artifact ingested", "id", art.ID, "title", art.Title, "chunks", n)
+			src, found, err := sys.Store.FindSource(store.SourceArtifact, art.ID)
+			if err != nil || !found {
+				return err
+			}
+			return sys.finishIngest(ctx, IngestReport{
+				ChangedRefs: []string{art.ID}, ChangedSourceIDs: []string{src.ID},
+			})
+		},
+	})
+}
+
+// finishIngest embeds and re-links whatever an ingest wrote.
+//
+// Shared by the conversation and artifact paths, and it runs the *incremental* edge
+// rebuild: a single new turn must not trigger a full-corpus similarity pass, which
+// on a vault-scale corpus would be minutes of work per chat message.
+func (sys *System) finishIngest(ctx context.Context, rep IngestReport) error {
+	if sys.EmbeddingsAvailable() {
+		br, err := sys.Backfill(ctx, 0, nil)
+		if err != nil {
+			return err
+		}
+		if br.Chunks > 0 {
+			slog.Info("embedding backfill complete", "report", br.String())
+		}
+	}
+	er, err := sys.BuildEdgesIncremental(ctx, rep, EdgeParams{})
+	if err != nil {
+		return err
+	}
+	if er.Total() > 0 {
+		slog.Info("incremental edge build complete", "report", er.String())
+	}
+	return nil
+}
+
+// EnqueueEdgeBuild queues an edge rebuild on its own — the path taken after the
+// model is provisioned for a corpus ingested without it, where the sequential and
+// link edges exist but the similarity graph does not.
+//
+// links may be nil; the link pass is then skipped rather than clearing the link
+// edges a previous ingest resolved.
+func (sys *System) EnqueueEdgeBuild(links []PendingLink) (bool, error) {
+	return sys.Queue.Enqueue(Job{
+		Kind: "edges",
+		Key:  "edges",
+		Run: func(ctx context.Context) error {
+			rep, err := sys.BuildEdges(ctx, links, EdgeParams{})
+			if err != nil {
+				return err
+			}
+			slog.Info("edge build complete", "report", rep.String())
 			return nil
 		},
 	})

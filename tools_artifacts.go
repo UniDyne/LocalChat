@@ -44,6 +44,7 @@ func (a *App) createArtifactTool() ToolDef {
 			wailsruntime.EventsEmit(a.ctx, "artifact:created", map[string]any{
 				"sessionId": sessionID, "id": id, "title": title, "contentType": contentType,
 			})
+			a.enqueueArtifactMemory(id)
 			return fmt.Sprintf("artifact created: %s (%s)", id, title), nil
 		},
 	}

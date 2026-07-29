@@ -42,10 +42,19 @@ var markdownExts = map[string]bool{".md": true, ".markdown": true}
 // IngestReport summarizes a run. Everything skipped is counted: a silent skip
 // reads as "covered everything" when it did not.
 type IngestReport struct {
-	Root             string        `json:"root"`
-	FilesSeen        int           `json:"filesSeen"`
-	FilesIngested    int           `json:"filesIngested"`
-	FilesUnchanged   int           `json:"filesUnchanged"`
+	Root      string `json:"root"`
+	FilesSeen int    `json:"filesSeen"`
+	// FilesIngested counts files whose content was chunked and stored.
+	FilesIngested int `json:"filesIngested"`
+	// FilesUnchanged counts files skipped as unchanged, split by how it was decided.
+	// FilesSkippedByStat never opened the file at all — that is where the
+	// incremental win comes from, and separating the two is what proves the fast
+	// path is actually being taken rather than silently falling through to hashing.
+	FilesUnchanged     int `json:"filesUnchanged"`
+	FilesSkippedByStat int `json:"filesSkippedByStat"`
+	FilesSkippedByHash int `json:"filesSkippedByHash"`
+	// FilesDeleted counts sources removed because the note no longer exists on disk.
+	FilesDeleted     int           `json:"filesDeleted"`
 	FilesTooLarge    int           `json:"filesTooLarge"`
 	FilesUnreadable  int           `json:"filesUnreadable"`
 	FilesOverCap     int           `json:"filesOverCap"`
@@ -57,7 +66,20 @@ type IngestReport struct {
 	UnresolvedSample []string      `json:"unresolvedSample"`
 	TagsFound        int           `json:"tagsFound"`
 	DailyNotes       int           `json:"dailyNotes"`
+	BytesRead        int64         `json:"bytesRead"`
 	Duration         time.Duration `json:"duration"`
+
+	// ChangedRefs and ChangedSourceIDs name the sources this run wrote or removed.
+	// Edge construction needs them to rebuild only what changed: rebuilding the
+	// whole graph after a two-file edit would undo the point of incremental ingest.
+	ChangedRefs      []string `json:"changedRefs"`
+	ChangedSourceIDs []string `json:"changedSourceIds"`
+}
+
+// Incremental reports whether this run behaved like an incremental re-scan, which
+// is the property the exit criterion is about.
+func (r IngestReport) Incremental() bool {
+	return r.FilesSeen > 0 && r.FilesIngested < r.FilesSeen
 }
 
 // UnresolvedRate returns the share of links that could not be resolved, which is
@@ -71,22 +93,38 @@ func (r IngestReport) UnresolvedRate() float64 {
 
 func (r IngestReport) String() string {
 	return fmt.Sprintf(
-		"ingested %d/%d files (%d unchanged, %d too large, %d unreadable), "+
-			"%d chunks (+%d deduped), links %d/%d resolved (%.1f%% unresolved), "+
-			"%d tags, %d daily notes, in %s",
-		r.FilesIngested, r.FilesSeen, r.FilesUnchanged, r.FilesTooLarge, r.FilesUnreadable,
+		"ingested %d/%d files (%d unchanged: %d by stat, %d by hash; %d deleted, "+
+			"%d too large, %d unreadable), %d chunks (+%d deduped), "+
+			"links %d/%d resolved (%.1f%% unresolved), %d tags, %d daily notes, "+
+			"%.1f MB read, in %s",
+		r.FilesIngested, r.FilesSeen, r.FilesUnchanged, r.FilesSkippedByStat,
+		r.FilesSkippedByHash, r.FilesDeleted, r.FilesTooLarge, r.FilesUnreadable,
 		r.ChunksWritten, r.ChunksDeduped, r.LinksResolved, r.LinksFound,
-		100*r.UnresolvedRate(), r.TagsFound, r.DailyNotes, r.Duration.Round(time.Millisecond))
+		100*r.UnresolvedRate(), r.TagsFound, r.DailyNotes,
+		float64(r.BytesRead)/(1<<20), r.Duration.Round(time.Millisecond))
 }
 
-// PendingLink is a resolved link awaiting edge construction in Phase 6. Parsing
-// and resolution happen at ingest, where the vault index is in hand; the edges
-// themselves need chunk ids for both ends and so are written later.
+// PendingLink is a resolved link awaiting edge construction. Parsing and
+// resolution happen at ingest, where the vault index is in hand; the edges
+// themselves need chunk ids for both ends and so are written by BuildLinkEdges
+// once the chunks are persisted.
 type PendingLink struct {
 	FromSourceRef string
-	ToSourceRef   string
-	Heading       string
-	Embed         bool
+	// ToSourceRef is the resolved target, or "" when the target does not exist in
+	// the vault.
+	ToSourceRef string
+	// Target is the raw link target as written, kept for reporting unresolved links.
+	Target string
+	// Heading is the "#section" part, used to aim the edge at the chunk carrying
+	// that heading rather than the note's first chunk.
+	Heading string
+	// Raw is the link as written (or, for an inferred link, the evidence quote),
+	// used to find the chunk that contains it.
+	Raw   string
+	Embed bool
+	// Kind is EdgeLink for an authored link or EdgeInferredLink for one the LLM pass
+	// proposed. Empty means EdgeLink.
+	Kind string
 }
 
 // Ingester turns Markdown into stored memory.
@@ -95,6 +133,12 @@ type Ingester struct {
 	tokens TokenCounter
 	// Links accumulates resolved links from the most recent run.
 	Links []PendingLink
+
+	// chunker selects the strategy. Headings is the default and the baseline the
+	// others must beat; all remain available so a measured loss can be reverted
+	// without code changes.
+	chunker ChunkerKind
+	leiden  LeidenChunkerConfig
 }
 
 // NewIngester builds an ingester. tc may be nil, in which case an exact BERT
@@ -105,7 +149,54 @@ func NewIngester(s *store.Store, tc TokenCounter) *Ingester {
 	if tc == nil {
 		tc = defaultTokenCounter()
 	}
-	return &Ingester{store: s, tokens: tc}
+	return &Ingester{store: s, tokens: tc, chunker: ChunkerHeadings}
+}
+
+// SetChunker selects the chunking strategy. The Leiden variants need a similarity
+// function; the semantic one additionally needs an embedder.
+//
+// Returns an error rather than silently falling back, so a misconfiguration is
+// visible instead of quietly producing baseline chunks that look like Leiden's.
+func (ing *Ingester) SetChunker(kind ChunkerKind, emb Embedder, cfg LeidenChunkerConfig) error {
+	if !kind.Valid() {
+		return fmt.Errorf("unknown chunker %q", kind)
+	}
+	if cfg.Graph.TopK == 0 {
+		cfg.Graph = DefaultGraphParams()
+	}
+	if cfg.Resolution == 0 {
+		cfg.Resolution = DefaultResolution
+	}
+	switch kind {
+	case ChunkerLeidenLexical:
+		if cfg.Similarity == nil {
+			cfg.Similarity = LexicalSimilarity{}
+		}
+	case ChunkerLeidenSemantic:
+		if cfg.Similarity == nil {
+			if emb == nil {
+				return fmt.Errorf("chunker %q requires an embedder", kind)
+			}
+			cfg.Similarity = SemanticSimilarity{Embedder: emb}
+		}
+	}
+	ing.chunker = kind
+	ing.leiden = cfg
+	return nil
+}
+
+// ChunkerName reports the active chunker, so a run's chunk boundaries can be
+// attributed to a strategy.
+func (ing *Ingester) ChunkerName() string { return string(ing.chunker) }
+
+// chunkDocument dispatches to the configured chunker.
+func (ing *Ingester) chunkDocument(ctx context.Context, blocks []Block) ([]Chunk, error) {
+	switch ing.chunker {
+	case ChunkerLeidenLexical, ChunkerLeidenSemantic:
+		return ChunkLeiden(ctx, blocks, ing.tokens, ing.leiden)
+	default:
+		return ChunkHeadings(blocks, ing.tokens), nil
+	}
 }
 
 // TokenCounterName reports which counter is in use, so a run's chunk boundaries
@@ -185,25 +276,54 @@ func (ing *Ingester) IngestDirectory(ctx context.Context, root string, onProgres
 	}
 	rep = rep2
 
-	// Pass 1: build the link resolver from every note's path and aliases, so a
-	// link to a note later in the walk still resolves. Aliases require reading
-	// frontmatter, which is cheap relative to full ingestion.
-	resolver := NewLinkResolver()
+	// Pass 1: decide what changed, from stat alone.
+	//
+	// Done as its own pass so the expensive passes can be skipped entirely when
+	// nothing changed. Without it, an unchanged re-scan still reads the first 8 KB of
+	// every note for aliases — on a 3,000-note vault that is thousands of file opens
+	// to establish that there is no work to do.
+	known, err := ing.knownSources()
+	if err != nil {
+		return rep, err
+	}
+	candidates := make([]noteFile, 0, len(files))
 	for _, f := range files {
-		aliases := readAliases(f.absPath)
+		if src, ok := known[f.relPath]; ok && src.FileSize == f.size &&
+			src.MTime != "" && sameTimestamp(src.MTime, f.modTime) {
+			rep.FilesUnchanged++
+			rep.FilesSkippedByStat++
+			continue
+		}
+		candidates = append(candidates, f)
+	}
+
+	// Pass 2: build the link resolver. Paths come free from the walk; aliases need
+	// the frontmatter, so they are only read when there is something to resolve links
+	// for. Every note must be registered even so — a changed note may link to an
+	// unchanged one.
+	resolver := NewLinkResolver()
+	readAliasesNow := len(candidates) > 0
+	for _, f := range files {
+		var aliases []string
+		if readAliasesNow {
+			aliases = readAliases(f.absPath)
+		}
 		resolver.AddNote(f.relPath, aliases)
 	}
 
-	// Pass 2: ingest.
-	for i, f := range files {
+	// Pass 3: ingest the candidates.
+	changedRefs := map[string]bool{}
+	changedIDs := map[string]bool{}
+	for i, f := range candidates {
 		if err := ctx.Err(); err != nil {
 			return rep, err
 		}
 		if onProgress != nil {
-			onProgress(i, len(files))
+			onProgress(i, len(candidates))
 		}
 
-		res, err := ing.ingestFile(f, resolver)
+		res, err := ing.ingestFile(ctx, f, resolver)
+		rep.BytesRead += res.bytesRead
 		if err != nil {
 			rep.FilesUnreadable++
 			slog.Warn("skipping unreadable note", "path", f.relPath, "error", err)
@@ -211,6 +331,7 @@ func (ing *Ingester) IngestDirectory(ctx context.Context, root string, onProgres
 		}
 		if res.unchanged {
 			rep.FilesUnchanged++
+			rep.FilesSkippedByHash++
 			continue
 		}
 		rep.FilesIngested++
@@ -220,6 +341,10 @@ func (ing *Ingester) IngestDirectory(ctx context.Context, root string, onProgres
 		if res.dailyNote {
 			rep.DailyNotes++
 		}
+		changedRefs[f.relPath] = true
+		if res.sourceID != "" {
+			changedIDs[res.sourceID] = true
+		}
 		for _, l := range res.links {
 			rep.LinksFound++
 			if l.ToSourceRef != "" {
@@ -228,20 +353,88 @@ func (ing *Ingester) IngestDirectory(ctx context.Context, root string, onProgres
 			} else {
 				rep.LinksUnresolved++
 				if len(rep.UnresolvedSample) < 10 {
-					rep.UnresolvedSample = append(rep.UnresolvedSample, l.Heading)
+					rep.UnresolvedSample = append(rep.UnresolvedSample, l.Target)
 				}
 			}
 		}
 	}
 	if onProgress != nil {
-		onProgress(len(files), len(files))
+		onProgress(len(candidates), len(candidates))
 	}
+
+	// Pass 4: sweep notes that no longer exist.
+	//
+	// Without this a re-scan is only half incremental: edits are picked up but
+	// deletions are not, so memory accumulates notes the user removed and search
+	// returns text that is no longer in their vault. Worse than stale — misleading,
+	// with nothing to signal it.
+	present := make(map[string]bool, len(files))
+	for _, f := range files {
+		present[f.relPath] = true
+	}
+	for ref, src := range known {
+		if present[ref] || !underRoot(src.Path, root) {
+			continue
+		}
+		if err := ing.store.DeleteSource(src.ID); err != nil {
+			return rep, err
+		}
+		if err := ing.store.DeleteLinksFrom(ref); err != nil {
+			return rep, err
+		}
+		rep.FilesDeleted++
+		changedRefs[ref] = true
+		slog.Info("removed memory for a note that no longer exists", "ref", ref)
+	}
+
+	rep.ChangedRefs = sortedSetKeys(changedRefs)
+	rep.ChangedSourceIDs = sortedSetKeys(changedIDs)
 
 	if err := ing.store.MarkStatsDirty(); err != nil {
 		return rep, err
 	}
 	rep.Duration = time.Since(started)
 	return rep, nil
+}
+
+// knownSources indexes the directory sources already stored, by source_ref.
+func (ing *Ingester) knownSources() (map[string]store.MemorySource, error) {
+	all, err := ing.store.ListSources()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]store.MemorySource, len(all))
+	for _, s := range all {
+		if s.SourceType == store.SourceDirectory {
+			out[s.SourceRef] = s
+		}
+	}
+	return out, nil
+}
+
+// underRoot reports whether a stored source's absolute path lies under root.
+//
+// The deletion sweep must never touch sources belonging to a *different* ingested
+// directory: a vault scan that quietly deleted another vault's memory because those
+// notes were absent from this walk would be a data-loss bug, not a stale-data one.
+func underRoot(path, root string) bool {
+	if path == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func sortedSetKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func discoverNotes(root string, rep IngestReport) ([]noteFile, IngestReport, error) {
@@ -321,6 +514,9 @@ func readAliases(path string) []string {
 
 type fileResult struct {
 	unchanged     bool
+	skippedByStat bool
+	bytesRead     int64
+	sourceID      string
 	chunksWritten int
 	chunksDeduped int
 	tags          int
@@ -328,23 +524,51 @@ type fileResult struct {
 	links         []PendingLink
 }
 
-func (ing *Ingester) ingestFile(f noteFile, resolver *LinkResolver) (fileResult, error) {
+func (ing *Ingester) ingestFile(ctx context.Context, f noteFile, resolver *LinkResolver) (fileResult, error) {
 	var res fileResult
+	sourceRef := f.relPath
+
+	existing, found, err := ing.store.FindSource(store.SourceDirectory, sourceRef)
+	if err != nil {
+		return res, err
+	}
+
+	// Fast incremental skip: matching mtime *and* size means the file has not been
+	// touched, so it is never opened. This is where the incremental win actually
+	// comes from — on a vault-scale corpus the cost of a re-scan is dominated by
+	// reading and hashing every file, not by the database.
+	//
+	// mtime alone would be unsafe (some editors and sync tools preserve it) and size
+	// alone obviously so; together they are the same check every build tool relies
+	// on. The content hash below remains the authority whenever either differs, so a
+	// false "changed" costs a read and a false "unchanged" requires both stamps to
+	// collide — which is why the pair is used rather than mtime on its own.
+	if found && existing.FileSize == f.size && existing.MTime != "" &&
+		sameTimestamp(existing.MTime, f.modTime) {
+		res.unchanged = true
+		res.skippedByStat = true
+		res.sourceID = existing.ID
+		return res, nil
+	}
 
 	raw, err := os.ReadFile(f.absPath)
 	if err != nil {
 		return res, err
 	}
+	res.bytesRead = int64(len(raw))
 	content := string(raw)
 	hash := hashContent(content)
-	sourceRef := f.relPath
 
-	// Incremental skip: unchanged content is a no-op. This is what keeps a
-	// re-scan of a thousands-of-notes vault cheap.
-	if existing, found, err := ing.store.FindSource(store.SourceDirectory, sourceRef); err != nil {
-		return res, err
-	} else if found && existing.ContentHash == hash {
+	// The file's stamps moved but its bytes did not — a touch, a sync, or a
+	// save-with-no-edit. Refresh the stamps so the next scan takes the fast path,
+	// but do not re-chunk: re-chunking would churn chunk ids and therefore every
+	// edge touching them, for no change in content.
+	if found && existing.ContentHash == hash {
 		res.unchanged = true
+		res.sourceID = existing.ID
+		if err := ing.store.RefreshSourceStamps(existing.ID, f.modTime.Format(time.RFC3339), f.size); err != nil {
+			return res, err
+		}
 		return res, nil
 	}
 
@@ -379,16 +603,20 @@ func (ing *Ingester) ingestFile(f noteFile, resolver *LinkResolver) (fileResult,
 	}
 
 	blocks := ParseBlocks(body)
-	chunks := ChunkHeadings(blocks, ing.tokens)
+	chunks, err := ing.chunkDocument(ctx, blocks)
+	if err != nil {
+		return res, err
+	}
 
 	// Links are resolved here, where the vault index is in hand. Edges are
 	// written in Phase 6 once both endpoints have chunk ids.
 	for _, l := range ExtractLinks(body) {
-		pl := PendingLink{FromSourceRef: sourceRef, Heading: l.Heading, Embed: l.Embed}
+		pl := PendingLink{
+			FromSourceRef: sourceRef, Target: l.Target,
+			Heading: l.Heading, Raw: l.Raw, Embed: l.Embed,
+		}
 		if target, ok := resolver.Resolve(l.Target); ok {
 			pl.ToSourceRef = target
-		} else {
-			pl.Heading = l.Target // carry the unresolved target for reporting
 		}
 		res.links = append(res.links, pl)
 	}
@@ -436,18 +664,51 @@ func (ing *Ingester) ingestFile(f noteFile, resolver *LinkResolver) (fileResult,
 		})
 	}
 
-	if _, err := ing.store.ReplaceSource(store.MemorySource{
+	sourceID, err := ing.store.ReplaceSource(store.MemorySource{
 		SourceType:  store.SourceDirectory,
 		SourceRef:   sourceRef,
 		Title:       title,
 		Path:        f.absPath,
 		ContentHash: hash,
 		MTime:       f.modTime.Format(time.RFC3339),
-	}, storeChunks); err != nil {
+		FileSize:    f.size,
+	}, storeChunks)
+	if err != nil {
 		return res, err
 	}
+	res.sourceID = sourceID
 	res.chunksWritten = len(storeChunks)
+
+	// Persist the resolved links. They are needed later to rebuild this note's edges
+	// *and* the edges of notes linking to it, neither of which can be recovered from
+	// the chunks alone (see store.StoredLink).
+	stored := make([]store.StoredLink, 0, len(res.links))
+	for _, l := range res.links {
+		if l.ToSourceRef == "" {
+			continue
+		}
+		stored = append(stored, store.StoredLink{
+			ToRef: l.ToSourceRef, Heading: l.Heading, Raw: l.Raw, Embed: l.Embed,
+		})
+	}
+	if err := ing.store.ReplaceLinksFrom(sourceRef, EdgeLink, stored); err != nil {
+		return res, err
+	}
 	return res, nil
+}
+
+// sameTimestamp compares a stored RFC3339 mtime against a file's, to the second.
+//
+// Truncating to the second is deliberate: the stored value is RFC3339 with no
+// sub-second component, so comparing at higher resolution would report every file
+// as changed and silently disable the fast path — the exact failure this function
+// exists to avoid.
+func sameTimestamp(stored string, actual time.Time) bool {
+	t, err := time.Parse(time.RFC3339, stored)
+	if err != nil {
+		return false
+	}
+	return t.UTC().Truncate(time.Second).Equal(actual.UTC().Truncate(time.Second))
 }
 
 // dedupCandidates fetches chunks that might duplicate any of this file's chunks,
@@ -476,10 +737,17 @@ func (ing *Ingester) dedupCandidates(chunkTerms []map[string]int, excludeSourceR
 }
 
 // isDuplicate reports whether set matches any of the precomputed sets closely
-// enough to be a duplicate.
+// enough to be a duplicate at the ingest threshold.
 func isDuplicate(set *NgramSet, others []*NgramSet) bool {
+	return isDuplicateAt(set, others, DedupThreshold)
+}
+
+// isDuplicateAt is the same test at an explicit threshold. Retrieval uses a looser
+// one than ingest: ingest stops outright copies entering the corpus, retrieval stops
+// merely-similar passages both being returned.
+func isDuplicateAt(set *NgramSet, others []*NgramSet, threshold float64) bool {
 	for _, o := range others {
-		if set.Dice(o, DedupThreshold) >= DedupThreshold {
+		if set.Dice(o, threshold) >= threshold {
 			return true
 		}
 	}

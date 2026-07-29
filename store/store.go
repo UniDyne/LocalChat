@@ -77,9 +77,31 @@ type Artifact struct {
 
 // Store wraps DuckDB-backed session storage and provides thread-safe access.
 type Store struct {
-	db             *sql.DB
-	mu             sync.Mutex
+	db *sql.DB
+	// mu guards currentSession, the only in-memory state here.
+	mu sync.Mutex
+	// writeMu serializes memory-table writes.
+	//
+	// It is not belt-and-braces. DuckDB detects write-write conflicts between
+	// concurrent transactions and *fails* the loser, and two memory writers are
+	// routine: the ingestion queue's worker writes while the chat goroutine searches,
+	// and a search recomputes and stores BM25 corpus statistics. Without this, an
+	// ingest racing a search raises `Duplicate key "key: stats_dirty" violates
+	// primary key constraint` even though the statement is an upsert — observed, not
+	// theorized (see TestConcurrentMemoryWrites).
+	//
+	// Reads deliberately do not take it: DuckDB's MVCC serves them from a snapshot,
+	// and holding a lock across search would put ingestion in the path of every
+	// query, which is the thing the queue exists to prevent.
+	writeMu        sync.Mutex
 	currentSession string
+}
+
+// lockWrites serializes a memory-table write. Callers must not hold it while
+// calling another write method — no method here nests.
+func (s *Store) lockWrites() func() {
+	s.writeMu.Lock()
+	return s.writeMu.Unlock
 }
 
 // Path returns the path to the DuckDB file next to config.json / executable.
@@ -116,13 +138,9 @@ func OpenAt(path string) (*Store, error) {
 
 	s := &Store{db: db}
 
-	if _, err := db.Exec(schemaSQL); err != nil {
+	if err := applySchema(db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("create tables: %w", err)
-	}
-	if _, err := db.Exec(memorySchemaSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create memory tables: %w", err)
+		return nil, err
 	}
 	if err := s.SetMeta(MetaSchemaVersion, MemorySchemaVersion); err != nil {
 		db.Close()
@@ -160,6 +178,28 @@ func OpenAt(path string) (*Store, error) {
 	}
 
 	return s, nil
+}
+
+// applySchema creates and migrates every table, idempotently.
+//
+// One function rather than three calls at the open site so that the sequence cannot
+// drift: tests build a Store directly and previously reproduced this DDL by hand,
+// which silently missed the Phase 7 migration and failed with a binder error on a
+// column that existed everywhere except in tests.
+func applySchema(db *sql.DB) error {
+	if _, err := db.Exec(schemaSQL); err != nil {
+		return fmt.Errorf("create tables: %w", err)
+	}
+	if _, err := db.Exec(memorySchemaSQL); err != nil {
+		return fmt.Errorf("create memory tables: %w", err)
+	}
+	// Columns added after the first release. Idempotent, so it runs unconditionally
+	// rather than being gated on the recorded schema version — see
+	// memoryMigrationSQL.
+	if _, err := db.Exec(memoryMigrationSQL); err != nil {
+		return fmt.Errorf("migrate memory tables: %w", err)
+	}
+	return nil
 }
 
 // schemaSQL is the full schema, applied idempotently on every Open. Kept as a

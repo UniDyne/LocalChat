@@ -177,9 +177,10 @@ func openStoreAt(t *testing.T, path string) *Store {
 		t.Fatalf("open duckdb %s: %v", path, err)
 	}
 	s := &Store{db: db}
-	if _, err := db.Exec(schemaSQL); err != nil {
+	// applySchema, not a hand-rolled copy of its DDL: a duplicate drifts, and it did.
+	if err := applySchema(db); err != nil {
 		db.Close()
-		t.Fatalf("create tables: %v", err)
+		t.Fatalf("apply schema: %v", err)
 	}
 	return s
 }

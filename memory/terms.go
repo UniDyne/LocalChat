@@ -83,7 +83,12 @@ func splitIdentifier(w string) []string {
 
 var (
 	// A run of capitalized words: "Florida Hardware", "DuckDB".
-	properNounRe = regexp.MustCompile(`\b(\p{Lu}[\p{L}\d]*(?:\s+\p{Lu}[\p{L}\d]*)*)\b`)
+	//
+	// The separator is `[ \t]+`, not `\s+`. With `\s+` the run crossed line breaks and
+	// swallowed a heading plus the next sentence's opening word — a real bug, which
+	// produced entities like "Deployment\n\nThe Falkirk Wheel" that no query could ever
+	// match. Capitalization runs are a within-line phenomenon; a line break ends a name.
+	properNounRe = regexp.MustCompile(`\b(\p{Lu}[\p{L}\d]*(?:[ \t]+\p{Lu}[\p{L}\d]*)*)\b`)
 	// ISO and common written dates.
 	isoDateRe   = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2})\b`)
 	writtenDate = regexp.MustCompile(`\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4})\b`)
@@ -105,6 +110,20 @@ var commonSentenceStarters = map[string]bool{
 	"were": true, "be": true, "been": true, "no": true, "not": true, "yes": true,
 	"note": true, "however": true, "because": true, "since": true, "after": true,
 	"before": true, "once": true, "then": true, "also": true, "both": true,
+}
+
+// trimLeadingArticle drops a leading English article from a capitalized phrase,
+// unless the article is the whole of it.
+func trimLeadingArticle(v string) string {
+	for _, art := range []string{"The ", "A ", "An "} {
+		if strings.HasPrefix(v, art) {
+			rest := strings.TrimSpace(v[len(art):])
+			if rest != "" {
+				return rest
+			}
+		}
+	}
+	return v
 }
 
 // ExtractEntities pulls heuristic entities from text, plus the vault-native
@@ -155,6 +174,10 @@ func ExtractEntities(text string, tags []string, dates []string) []store.ChunkEn
 	}
 	for _, m := range properNounRe.FindAllStringSubmatch(clean, -1) {
 		v := strings.TrimSpace(m[1])
+		// A leading article belongs to the sentence, not the name: "The Falkirk Wheel"
+		// and "Falkirk Wheel" are the same entity, and keeping both spellings means a
+		// query mentioning one cannot match a chunk carrying the other.
+		v = trimLeadingArticle(v)
 		if v == "" {
 			continue
 		}

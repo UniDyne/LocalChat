@@ -77,8 +77,11 @@ func (sys *System) Backfill(ctx context.Context, batchSize int, onProgress func(
 
 		texts := make([]string, len(pending))
 		for i, c := range pending {
-			// Passage side: no query prefix, heading path as context.
-			texts[i] = BuildEmbeddedText(c.HeadingPath, "", "", c.Text, tc)
+			// Passage side: no query prefix. The prefixes come from the stored row —
+			// heading path for every chunk, plus thread context and CoT for
+			// conversation chunks, which are embedded but never returned (§3.3).
+			// BuildEmbeddedText applies the split budget and the CoT sub-cap.
+			texts[i] = BuildEmbeddedText(c.HeadingPath, c.ThreadContext, c.CotContext, c.Text, tc)
 		}
 
 		vecs, err := emb.EmbedPassages(ctx, texts)

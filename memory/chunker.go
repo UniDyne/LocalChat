@@ -33,6 +33,17 @@ type Chunk struct {
 	HeadingPath string
 	// TokenCount is the token length of Text alone.
 	TokenCount int
+	// SentFrom and SentTo record the half-open sentence range this chunk covers
+	// within its region, when the chunker tracks it. Diagnostic: it makes the
+	// contiguity property directly assertable instead of inferred by re-splitting
+	// the joined text, which silently loses sentences.
+	SentFrom, SentTo int
+	// Community identifies the topical group this chunk came from, for chunkers
+	// that compute one. Chunks from different communities are never merged: the
+	// small-chunk merge exists to avoid stubs, and letting it join two communities
+	// would silently undo the topical split that was just computed. 0 for chunkers
+	// with no notion of community, which makes merging unconstrained as before.
+	Community int
 }
 
 // ChunkHeadings splits blocks into chunks along heading boundaries, packing
@@ -173,10 +184,16 @@ func mergeSmallChunks(in []Chunk, tc TokenCounter) []Chunk {
 		prev := &out[len(out)-1]
 		mergeable := c.TokenCount < MinChunkTokens &&
 			prev.HeadingPath == c.HeadingPath &&
+			prev.Community == c.Community &&
 			prev.TokenCount+c.TokenCount <= MaxChunkTokens
 		if mergeable {
 			prev.Text = prev.Text + "\n\n" + c.Text
 			prev.TokenCount = tc.Count(prev.Text)
+			// Extend the range, or the recorded span would understate what the
+			// merged chunk actually covers.
+			if c.SentTo > prev.SentTo {
+				prev.SentTo = c.SentTo
+			}
 			continue
 		}
 		out = append(out, c)

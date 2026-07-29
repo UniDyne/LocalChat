@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"math/rand"
 	"path/filepath"
@@ -15,11 +16,8 @@ import (
 func openMemoryStore(t *testing.T) *Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "memory.db")
-	s := openStoreAt(t, path)
-	if _, err := s.db.Exec(memorySchemaSQL); err != nil {
-		t.Fatalf("memory schema: %v", err)
-	}
-	return s
+	// openStoreAt applies the memory schema and its migrations too, via applySchema.
+	return openStoreAt(t, path)
 }
 
 // chunk builds a chunk with terms derived from its words, so BM25 bookkeeping
@@ -668,5 +666,90 @@ func TestMemoryStats(t *testing.T) {
 	}
 	if st.AvgDL <= 0 {
 		t.Errorf("AvgDL = %v", st.AvgDL)
+	}
+}
+
+// TestMigrationFromPreviousSchema is the upgrade path an existing user takes: a
+// database whose memory tables were created before Phase 7 added columns.
+//
+// TestSchemaMigrationIsIdempotent (in the memory package) covers reopening a
+// current-schema file. This covers the case that actually breaks — the ALTER running
+// against tables that already exist *with rows in them* — which no other test
+// reaches, because every other test creates its tables at the current version.
+func TestMigrationFromPreviousSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("duckdb", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The pre-Phase-7 shape: memory_sources without file_size, memory_chunks without
+	// the two context columns. Written out rather than derived from memorySchemaSQL so
+	// the test keeps describing the old schema even as the current one moves on.
+	const oldSchema = `
+CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE memory_sources (
+	id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_ref TEXT NOT NULL,
+	session_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '',
+	path TEXT NOT NULL DEFAULT '', content_hash TEXT NOT NULL DEFAULT '',
+	mtime TIMESTAMP, ingested_at TIMESTAMP NOT NULL,
+	token_count INTEGER NOT NULL DEFAULT 0,
+	entity_pass TEXT NOT NULL DEFAULT 'pending');
+CREATE TABLE memory_chunks (
+	id TEXT PRIMARY KEY, source_id TEXT NOT NULL, ord INTEGER NOT NULL,
+	text TEXT NOT NULL, heading_path TEXT NOT NULL DEFAULT '',
+	token_count INTEGER NOT NULL DEFAULT 0, char_len INTEGER NOT NULL DEFAULT 0,
+	embedding FLOAT[384], embed_model TEXT NOT NULL DEFAULT '',
+	created_at TIMESTAMP NOT NULL);
+`
+	if _, err := db.Exec(oldSchema); err != nil {
+		t.Fatalf("create old schema: %v", err)
+	}
+	// Existing data, so the migration is exercised against populated tables.
+	if _, err := db.Exec(`
+		INSERT INTO memory_sources (id, source_type, source_ref, ingested_at)
+		VALUES ('s1', 'directory', 'Note.md', now());
+		INSERT INTO memory_chunks (id, source_id, ord, text, created_at)
+		VALUES ('c1', 's1', 1, 'existing chunk text', now());`); err != nil {
+		t.Fatalf("seed old data: %v", err)
+	}
+	db.Close()
+
+	// Reopen through the real path.
+	s, err := OpenAt(path)
+	if err != nil {
+		t.Fatalf("open a pre-Phase-7 database: %v", err)
+	}
+	defer s.Close()
+
+	// The pre-existing row must survive, with the new columns at their defaults.
+	src, found, err := s.FindSource(SourceDirectory, "Note.md")
+	if err != nil {
+		t.Fatalf("read a migrated source: %v", err)
+	}
+	if !found {
+		t.Fatal("the pre-existing source did not survive the migration")
+	}
+	if src.FileSize != 0 {
+		t.Errorf("FileSize = %d, want the 0 default for a row written before the column existed", src.FileSize)
+	}
+
+	chunks, err := s.ChunksMissingEmbedding(10)
+	if err != nil {
+		t.Fatalf("read migrated chunks: %v", err)
+	}
+	if len(chunks) != 1 || chunks[0].Text != "existing chunk text" {
+		t.Fatalf("pre-existing chunk lost: %+v", chunks)
+	}
+	if chunks[0].ThreadContext != "" || chunks[0].CotContext != "" {
+		t.Errorf("new context columns should default to empty, got %q / %q",
+			chunks[0].ThreadContext, chunks[0].CotContext)
+	}
+
+	// And the new columns must be writable, not merely present.
+	if _, err := s.ReplaceSource(MemorySource{
+		SourceType: SourceConversation, SourceRef: "s#1-2", SessionID: "s", FileSize: 7,
+	}, []MemoryChunk{{Text: "new", ThreadContext: "t", CotContext: "c", TokenCount: 1}}); err != nil {
+		t.Fatalf("write through the migrated columns: %v", err)
 	}
 }

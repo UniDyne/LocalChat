@@ -54,8 +54,11 @@ func TestQueueRunsJobsInOrder(t *testing.T) {
 }
 
 // TestQueueSerializesWork is the property that matters most: ingestion must never
-// run concurrently with itself, because DuckDB is single-writer and the store
-// serializes through one mutex.
+// run concurrently with itself, because DuckDB is single-writer and fails the loser
+// of a write-write conflict. (The store's write mutex, added in Phase 7, protects
+// against writers *outside* the queue — a search recomputing BM25 statistics. It is
+// not a substitute for this: two concurrent ingests would still interleave their
+// transactions.)
 func TestQueueSerializesWork(t *testing.T) {
 	q := NewQueue(nil)
 	q.Start()
