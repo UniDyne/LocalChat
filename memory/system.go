@@ -249,6 +249,101 @@ func (sys *System) EnqueueEnrichment(limit int, onDone func(EnrichReport)) (bool
 	})
 }
 
+// EnqueueProvisionModel downloads and verifies the embedding model, then installs the
+// embedder and backfills vectors for anything already ingested.
+//
+// On the queue for the usual reason — the backfill it triggers is a bulk write — but the
+// download itself is the long part and is deliberately *not* automatic: §3.1a settled
+// that an unannounced request to huggingface.co on first launch is the wrong behaviour
+// for a local-first app.
+//
+// The backfill is what makes this useful rather than merely correct: a user who indexed
+// their notes before provisioning has chunks with no vectors, and this fills them in
+// without a re-ingest.
+func (sys *System) EnqueueProvisionModel(cfg Config, onProgress func(ProvisionProgress)) (bool, error) {
+	if sys.EmbeddingsAvailable() {
+		return false, fmt.Errorf("embeddings are already available")
+	}
+	// The download runs on its own goroutine, NOT on the queue.
+	//
+	// The queue has exactly one worker, and a 133 MB fetch can take many minutes — so
+	// running it there would park every conversation ingest and directory scan behind a
+	// network operation. Phase 7 measured turn latency precisely to keep that worker
+	// responsive, and Phase 8 batched enrichment to avoid monopolizing it; a long download
+	// belongs even less there. Only the *short* tail — installing the embedder, embedding
+	// what was already ingested, building edges — goes through the queue, because that
+	// part is a bulk database write and must be serialized.
+	go func() {
+		ctx := context.Background()
+		paths, err := ProvisionModel(ctx, onProgress)
+		if err != nil {
+			slog.Warn("model provisioning failed", "error", err)
+			if onProgress != nil {
+				onProgress(ProvisionProgress{File: "model.onnx", Err: err.Error()})
+			}
+			return
+		}
+		if _, err := sys.Queue.Enqueue(Job{
+			Kind: "provision",
+			Key:  "provision",
+			Run: func(ctx context.Context) error {
+				return sys.installEmbedder(ctx, cfg, paths, onProgress)
+			},
+		}); err != nil {
+			slog.Warn("could not queue post-download embedding", "error", err)
+		}
+	}()
+	return true, nil
+}
+
+// installEmbedder is provisioning's tail: bring the embedder up, then embed and link
+// whatever was ingested before the model existed.
+//
+// Separate from the download so the two can live on different goroutines — this half is a
+// bulk database write and belongs on the queue; the download half does not.
+func (sys *System) installEmbedder(ctx context.Context, cfg Config, paths ModelPaths,
+	onProgress func(ProvisionProgress),
+) error {
+	{
+		emb, err := NewONNXEmbedder(ONNXConfig{
+			ModelDir:       paths.Dir,
+			IntraOpThreads: cfg.IntraOpThreads,
+			BatchSize:      cfg.BatchSize,
+		})
+		if err != nil {
+			// The model is on disk but unusable — almost always the ONNX Runtime, not the
+			// model, so the reason has to reach the user rather than becoming a generic
+			// "provisioning failed".
+			if onProgress != nil {
+				onProgress(ProvisionProgress{File: "model.onnx", Err: err.Error()})
+			}
+			return err
+		}
+		if err := sys.SetEmbedder(emb); err != nil {
+			return err
+		}
+		slog.Info("embedder installed after provisioning", "model", emb.ModelName())
+	}
+
+	rep, err := sys.Backfill(ctx, 0, nil)
+	if err != nil {
+		return err
+	}
+	if rep.Chunks > 0 {
+		slog.Info("embedded previously-ingested chunks", "report", rep.String())
+		// Similarity edges need those vectors, and nothing else will build them.
+		er, err := sys.BuildEdges(ctx, nil, EdgeParams{})
+		if err != nil {
+			return err
+		}
+		slog.Info("edge build after provisioning", "report", er.String())
+	}
+	if onProgress != nil {
+		onProgress(ProvisionProgress{File: "model.onnx", Complete: true, Percent: 100})
+	}
+	return nil
+}
+
 // SetEmbedder installs an embedder after construction — the path taken when the
 // user provisions the model from the UI without restarting the app.
 func (sys *System) SetEmbedder(emb Embedder) error {

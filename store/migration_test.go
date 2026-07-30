@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -287,3 +288,40 @@ func copyFile(src, dst string) error {
 }
 
 var _ = fmt.Sprintf
+
+// TestDuckDBVersionIsPinned guards the engine version, which is not self-evident from
+// go.mod and has drifted once already.
+//
+// DuckDB encodes the engine version into the Go module version: v2.4.3 is DuckDB 1.4.x,
+// while v2.10505.0 is 1.5.5. Under minimal version selection the second is *numerically
+// greater* (10505 > 4), so the 1.5.x line wins any comparison and a routine `go mod tidy`
+// or `go get -u` upgrades the engine silently. That is exactly how 1.5.5 got in.
+//
+// It matters because 1.5.5 does not work under Wails on Linux: it installs a SIGSEGV
+// handler without SA_ONSTACK, so the Go runtime aborts inside `sql.Open` with "non-Go
+// code set up signal handler without SA_ONSTACK flag" — a hard crash at startup, with a
+// traceback that points at the database open and gives no hint that a dependency moved.
+//
+// Reading go.mod is not a substitute for this test: the version that ships is decided by
+// the `lib/*` binding modules, which resolve independently of the pins a reader sees.
+// Ask the engine.
+func TestDuckDBVersionIsPinned(t *testing.T) {
+	s := openStoreAt(t, filepath.Join(t.TempDir(), "version.db"))
+	defer s.Close()
+
+	var version string
+	if err := s.db.QueryRow(`SELECT version()`).Scan(&version); err != nil {
+		t.Fatalf("query DuckDB version: %v", err)
+	}
+	t.Logf("DuckDB %s", version)
+
+	const wantPrefix = "v1.4."
+	if !strings.HasPrefix(version, wantPrefix) {
+		t.Errorf("DuckDB is %s, want %s* (LTS).\n\n"+
+			"If this is %s, the engine has been upgraded — most likely by `go mod tidy` or "+
+			"`go get -u` selecting a v2.105xx.0 module version, which is semver-greater than "+
+			"the v2.4.x line. The 1.5.x engine crashes at startup under Wails on Linux "+
+			"(SA_ONSTACK signal handler). Restore the `replace` directive in go.mod.",
+			version, wantPrefix, version)
+	}
+}

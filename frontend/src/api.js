@@ -5,6 +5,9 @@ import { GetArtifacts, GetArtifactContent, CreateArtifactManual, SaveArtifact } 
 import { SetMessagePinned } from '../wailsjs/go/main/App';
 import { SelectDirectory, ClearDirectory, GetWorkDir } from '../wailsjs/go/main/App';
 import { GetPlan } from '../wailsjs/go/main/App';
+import { MemoryStatus, MemorySources, SelectMemoryDirectory, IngestDirectory, ForgetMemorySource, ForgetMemoryFolder, MemoryReady, IndexExistingHistory, UnindexedHistoryCount } from '../wailsjs/go/main/App';
+import { SearchMemoryTuned, DefaultMemoryWeights, RebuildMemoryEdges, EnrichMemoryEntities, RollbackMemoryEntityEnrichment } from '../wailsjs/go/main/App';
+import { ProvisionMemoryModel, GetMemoryModelInfo } from '../wailsjs/go/main/App';
 
 /**
  * Return an array of available model names from the configured Ollama server.
@@ -222,4 +225,171 @@ export async function createArtifactManual(title, content, contentType) {
  */
 export async function saveArtifact(id) {
     return await SaveArtifact(id);
+}
+
+// --- Memory ---
+
+/**
+ * Snapshot of the memory subsystem: whether embeddings are available (and why not,
+ * when they aren't), the active token counter and extraction model, queue state,
+ * corpus counts, edges per kind, and enrichment progress per state.
+ * @returns {{embeddingsAvailable:boolean,unavailableReason:string,tokenCounter:string,
+ *   extractModel:string,queue:{pending:number,running:string,completed:number,failed:number},
+ *   corpus:{sources:number,chunks:number,embeddedChunks:number,terms:number,entities:number,
+ *   edges:number,pendingEntities:number,avgDocLength:number,embedModel:string,embedDims:number},
+ *   edgesByKind:Object<string,number>,entityPass:Object<string,number>}}
+ */
+export async function memoryStatus() {
+    return await MemoryStatus();
+}
+
+/**
+ * What the embedding model is, how big, where it goes, and whether it's already
+ * there — so the UI can state the cost before asking for a 133 MB download.
+ * @returns {{name:string,revision:string,bytes:number,targetDir:string,present:boolean}}
+ */
+export async function memoryModelInfo() {
+    return await GetMemoryModelInfo();
+}
+
+/**
+ * Download and verify the embedding model, then enable semantic search and embed
+ * anything already indexed. Progress arrives on the `memory:provision` event.
+ * User-initiated by design: nothing is fetched unless asked.
+ */
+export async function provisionMemoryModel() {
+    return await ProvisionMemoryModel();
+}
+
+/**
+ * Whether the memory subsystem has finished starting.
+ *
+ * Wails serves the UI while OnStartup is still running and building it — which loads a
+ * 133 MB model — so a memory call made on page load can legitimately arrive too early.
+ * This is the cheap check that distinguishes "not yet" from "broken".
+ */
+export async function memoryReady() {
+    return await MemoryReady();
+}
+
+/**
+ * Index the sessions and artifacts that already existed before memory did.
+ *
+ * Ingestion is event-driven — a turn completing, an artifact being created — so a
+ * database with prior history has none of it indexed and nothing would ever replay it.
+ * Idempotent: everything is content-hashed, so re-running skips what is unchanged.
+ */
+export async function indexExistingHistory() {
+    return await IndexExistingHistory();
+}
+
+/**
+ * How many non-empty sessions have no memory source yet, so the offer to backfill can
+ * be hidden when there is nothing to backfill.
+ */
+export async function unindexedHistoryCount() {
+    return await UnindexedHistoryCount();
+}
+
+/**
+ * List everything indexed, newest first.
+ * @returns {{id:string,sourceType:string,sourceRef:string,sessionId:string,title:string,
+ *   path:string,contentHash:string,mtime:string,fileSize:number,ingestedAt:string,
+ *   tokenCount:number,entityPass:string}[]}
+ */
+export async function memorySources() {
+    return await MemorySources();
+}
+
+/**
+ * Open a native picker and queue the chosen folder of Markdown notes for indexing.
+ * Distinct from selectDirectory(), which sets the file tools' sandbox — indexing a
+ * folder must not silently grant write access to it.
+ * @returns {string} The chosen directory, or "" if cancelled.
+ */
+export async function selectMemoryDirectory() {
+    return await SelectMemoryDirectory();
+}
+
+/**
+ * Re-scan an already-indexed folder. Incremental: unchanged files are skipped from
+ * their (mtime, size) without being read, and notes deleted on disk are removed.
+ * @param {string} path
+ */
+export async function ingestDirectory(path) {
+    return await IngestDirectory(path);
+}
+
+/**
+ * Delete one indexed source and everything derived from it.
+ * @param {string} sourceId
+ */
+export async function forgetMemorySource(sourceId) {
+    await ForgetMemorySource(sourceId);
+}
+
+/**
+ * Forget every indexed note under a folder. The unit the UI works in — a vault is
+ * thousands of sources, so per-source deletion is not a usable undo.
+ * @param {string} path
+ * @returns {number} Sources removed.
+ */
+export async function forgetMemoryFolder(path) {
+    return await ForgetMemoryFolder(path);
+}
+
+/**
+ * Search memory, returning results plus the report explaining how they were found.
+ *
+ * tuning is optional; omit it for the defaults. Any nonzero weight means the caller
+ * is driving all four. The report is what distinguishes "nothing matched" from
+ * "embeddings unavailable", which a bare result list cannot.
+ * @param {string} query
+ * @param {number} [limit=8]
+ * @param {{bm25?:number,vector?:number,entity?:number,ngram?:number,mode?:string,
+ *   expand?:boolean|null,sourceTypes?:string[]}} [tuning={}]
+ */
+export async function searchMemory(query, limit = 8, tuning = {}) {
+    const t = {
+        bm25: tuning.bm25 || 0, vector: tuning.vector || 0,
+        entity: tuning.entity || 0, ngram: tuning.ngram || 0,
+        mode: tuning.mode || '',
+        expand: tuning.expand === undefined ? null : tuning.expand,
+        sourceTypes: tuning.sourceTypes || [],
+    };
+    return await SearchMemoryTuned(query, limit, t);
+}
+
+/**
+ * The retrieval weights the system currently uses, so tuning controls start from
+ * the real values rather than a copy that drifts.
+ */
+export async function defaultMemoryWeights() {
+    return await DefaultMemoryWeights();
+}
+
+/**
+ * Queue an edge rebuild. Needed when a corpus was indexed before the embedding
+ * model was provisioned: its sequential and link edges exist but its similarity
+ * graph does not.
+ */
+export async function rebuildMemoryEdges() {
+    return await RebuildMemoryEdges();
+}
+
+/**
+ * Queue the optional LLM entity pass. Off by default and unproven — see the README.
+ * @param {number} [limit=0] Batch size; 0 uses the default.
+ */
+export async function enrichMemoryEntities(limit = 0) {
+    return await EnrichMemoryEntities(limit);
+}
+
+/**
+ * Remove every association the LLM entity tier produced, leaving the pattern-based
+ * and tag tiers untouched, and mark each source pending again.
+ * @returns {number} Associations removed.
+ */
+export async function rollbackMemoryEnrichment() {
+    return await RollbackMemoryEntityEnrichment();
 }

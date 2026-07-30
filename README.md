@@ -122,6 +122,26 @@ an attempt to emulate the thinking modes of Claude.
     lightweight skill system: markdown files under `conf/skills/` the model
     can discover by name/description, load on demand, and write new ones to
     when it works out something worth remembering for next time.
+  - `search_memory`: search your own material — Markdown notes you've indexed,
+    earlier conversations, and saved artifacts. See **Memory** below.
+- **Memory.** A local retrieval system over your own material, in the Memory
+  tab of the left sidebar. Point it at a folder of Markdown notes (an Obsidian
+  vault works well — it understands wikilinks, aliases, tags, frontmatter and
+  daily notes) and it indexes them; your conversations and artifacts are added
+  automatically as you go. Search combines keyword matching, semantic
+  similarity, entity overlap and character n-grams, then follows links and
+  related-note connections outward from the best matches, so it can surface a
+  note that never mentions your search words.
+
+  Everything runs on your machine. Semantic search needs a one-time 133 MB
+  model download; without it the other three signals still work and the tab
+  tells you what's missing. Re-scanning a folder is incremental — unchanged
+  files aren't even opened — and notes you delete on disk are dropped from the
+  index.
+
+  The tab shows what's indexed, what the queue is doing, and for every search
+  result the four signal scores behind its rank, so you can see *why*
+  something ranked where it did and adjust the weights if you disagree.
 - **Session persistence.** Every session and message (including hidden cot
   notes and tool calls) is stored in a local DuckDB file (`sessions.db`) next
   to the executable. Messages can be individually pinned/unpinned to control
@@ -129,6 +149,10 @@ an attempt to emulate the thinking modes of Claude.
 - **Task provenance.** A message auto-dispatched from a queued task list is
   visually distinct ("Task") and persists that way. A reloaded session can
   still tell a queued step apart from something you actually typed.
+- **Memory dies with its session.** Deleting a session deletes the memory
+  derived from it — its conversation turns and its artifacts. Notes indexed
+  from a folder are untouched: they have no session to belong to, and they're
+  the primary corpus.
 - **Live timing.** The status bar counts up while a request is in flight, and
   every generated message (cot note, tool call, reply) shows how long it took,
   tracked client-side, not persisted, so it's only visible for the current
@@ -164,9 +188,30 @@ simple-cot-chat/
   ```
 - [Ollama](https://ollama.com) running and reachable, with at least one model
   pulled (`ollama pull <model>`)
+- A C toolchain (`gcc`/`clang`). **cgo is mandatory** — the DuckDB driver
+  static-links prebuilt DuckDB libraries, so `CGO_ENABLED=0` will not build.
 
 Run `wails doctor` to check your platform's WebView/build dependencies are in
 place.
+
+#### On the DuckDB dependency
+
+Persistence uses [`github.com/duckdb/duckdb-go/v2`](https://github.com/duckdb/duckdb-go)
+(the canonical successor to `marcboeker/go-duckdb`, which is deprecated). Two
+things to expect:
+
+- **The first build is slow and large.** The driver pulls per-platform static
+  libraries — a few hundred MB into the module cache — and linking them takes a
+  while. Subsequent builds are normal. `go build` fetches everything from
+  `go.mod`, so no explicit `go get` is needed for a fresh clone; if you're
+  updating the dependency deliberately:
+  ```
+  go get github.com/duckdb/duckdb-go/v2
+  ```
+- **The database file's format is tied to the DuckDB version.** DuckDB reads
+  older files forward, so an upgrade opens an existing `sessions.db` fine, but
+  once the newer library has written to it the file won't reopen under an older
+  one. If you're changing DuckDB versions, copy `sessions.db` aside first.
 
 ### Configuration
 
@@ -185,6 +230,49 @@ to sensible defaults if it's missing):
 
 The Ollama endpoint can also be overridden with the `OLLAMA_HOST` environment
 variable, which takes precedence over `config.json`.
+
+#### Semantic search: the embedding model and ONNX Runtime
+
+Memory's keyword, entity and character matching work out of the box. *Semantic*
+search needs two things on disk, and the Memory tab tells you which one is
+missing:
+
+1. **The embedding model** (`bge-small-en-v1.5`, 133 MB). Click **Download the
+   model** in the Memory tab. It's fetched from a pinned Hugging Face revision,
+   verified against a known SHA-256, resumable if interrupted, and written to
+   `~/.cache/localchat/models/bge-small-en-v1.5/`. Nothing is downloaded unless
+   you ask — no outbound request happens on launch. Notes you already indexed
+   are embedded automatically afterwards, with no re-indexing.
+
+   To place it by hand instead, put `model.onnx` and `tokenizer.json` in that
+   directory, or point `LOCALCHAT_MODEL_DIR` at wherever you keep them.
+
+2. **ONNX Runtime ≥ 1.21** (`libonnxruntime.so` / `.dylib` / `onnxruntime.dll`),
+   searched in this order: `$ONNXRUNTIME_LIB`, then `lib/` beside the binary,
+   then `~/.cache/localchat/lib/`, then the system library paths.
+
+   On Debian 13 the distro package is enough:
+   ```
+   sudo apt install libonnxruntime1.21
+   ```
+   Anything newer also works — a newer runtime happily serves the older API
+   version this build requests. If your platform has no package, download a
+   release from
+   [onnxruntime](https://github.com/microsoft/onnxruntime/releases) and drop the
+   shared library into `~/.cache/localchat/lib/`.
+
+   The 1.21 floor is set by the Go binding, which compiles in a required API
+   version and cannot ask for less. If it's ever raised, semantic search stops
+   working on distro packages — `TestORTAPIVersionMatchesPinnedBinding` guards
+   against that happening by accident.
+
+   One cosmetic wart with Debian's package specifically: it links the system
+   `libonnx`, so the ONNX operator schemas get registered twice and the library
+   prints ~570 `Schema error: Trying to register schema ... already registered`
+   lines to stderr the first time it loads. Harmless — embeddings are correct and
+   byte-for-byte comparable with other builds — but noisy. Upstream's
+   self-contained build doesn't do it, if the noise bothers you more than the
+   extra download does.
 
 `extract_model` selects the model used by the memory subsystem's optional entity
 extraction pass, which reads each ingested note once and names the people,

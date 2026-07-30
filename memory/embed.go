@@ -70,6 +70,21 @@ func Unavailable(err error) bool {
 
 // ---------- model and library resolution ----------
 
+// ONNX Runtime version floor, set by the pinned binding rather than by us.
+//
+// onnxruntime_go compiles ORT_API_VERSION in from its bundled header and offers no way
+// to request less, so the binding chooses the floor. These constants exist so the error
+// message can name it: a user told "requires ORT 1.21 or newer" can act, whereas
+// "initialization failed" sends them reading source.
+//
+// Keep them in step with the pinned binding — read the number out of the module's
+// onnxruntime_c_api.h, because the binding's own version does not track it (v1.19.0
+// requests 21, v1.20.0 requests 22).
+const (
+	RequiredORTAPIVersion = 21
+	MinORTVersion         = "1.21"
+)
+
 // ModelDirName is the pinned model's directory name. The revision and digest are
 // recorded so a silently re-exported model is caught (§3.1a).
 const (
@@ -129,13 +144,26 @@ func FindModel() (ModelPaths, error) {
 
 // FindORT locates libonnxruntime.
 //
-// Two Phase 0 findings shape this. First, a system package may install only
-// versioned sonames — this dev box has libonnxruntime.so.1.21 and .so.1.21.0 but
-// no unversioned libonnxruntime.so.1 — so versioned names must be globbed.
-// Second, and more important, a system ORT can be *too old*: the binding compiles
-// in a required API version (26 for onnxruntime_go v1.31.0) and ORT 1.21 supports
-// only up to 21, which fails at InitializeEnvironment. That is why the bundled
-// library is checked first and the system one is a last resort.
+// A system package may install only versioned sonames — this box has
+// libonnxruntime.so.1.21 and .so.1.21.0 but no unversioned libonnxruntime.so.1 — so
+// versioned names must be globbed and the highest chosen.
+//
+// **On the version floor, which moved.** The binding compiles in a required
+// ORT_API_VERSION from its bundled header and cannot be asked for less, so the binding
+// sets a floor on the library. Phase 0 used onnxruntime_go v1.31.0, which requests API
+// 26 and therefore rejected Debian's ORT 1.21 outright. That made shipping our own
+// library mandatory and the system path nearly useless.
+//
+// The binding is now pinned to **v1.19.0, which requests API 21** — the newest binding
+// ORT 1.21.0 accepts, so Debian 13's `libonnxruntime1.21` package works as-is. Note the
+// binding's own version number does not track the API it requests: v1.19.0 and v1.20.0
+// differ by one release but request 21 and 22 respectively, so this has to be read out
+// of the bundled header rather than inferred.
+//
+// Compatibility runs one way and pinning low exploits it: a *newer* library serves an
+// *older* requested API, so API 21 also works against 1.28 and later. Verified — the two
+// produce vectors with cosine 1.0000000000 and a max component delta of 9e-8, i.e. the
+// same vector space, so a corpus embedded under one runtime stays valid under the other.
 func FindORT() (path string, how string, err error) {
 	exeDir := ""
 	if exe, e := os.Executable(); e == nil {

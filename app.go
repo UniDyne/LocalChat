@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,8 +15,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
-	_ "github.com/marcboeker/go-duckdb/v2"
+	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/ollama/ollama/api"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"simple-cot-chat/memory"
@@ -66,6 +69,62 @@ func loadConfig() *config {
 	return cfg
 }
 
+// Timeouts for talking to Ollama.
+//
+// The distinction matters: a *connect* can be bounded tightly, a *generation* cannot.
+const (
+	// ollamaDialTimeout bounds establishing the TCP connection. This is the one that
+	// matters for a misconfigured or unreachable endpoint: a host that drops SYNs rather
+	// than refusing them otherwise hangs for the OS retry budget — roughly two minutes on
+	// Linux — with the calling goroutine parked in net/http's transport.
+	ollamaDialTimeout = 5 * time.Second
+	// ollamaShortCallTimeout bounds the management calls (listing models, health checks).
+	// They are metadata requests; if one is slow, something is wrong.
+	ollamaShortCallTimeout = 10 * time.Second
+)
+
+// newOllamaHTTPClient builds the HTTP client for Ollama.
+//
+// Note what is deliberately *not* set: `http.Client.Timeout`. That would be the obvious
+// choice and it is wrong here, because it bounds the entire request *including reading
+// the response body* — which for a chat completion is the whole generation. A 60-second
+// client timeout would silently truncate any reply that took longer to produce.
+//
+// So the bound goes on the connection instead. A dial timeout fixes the case that
+// actually hangs the UI (an endpoint that is not there) while leaving a slow generation
+// free to take as long as it takes.
+//
+// ResponseHeaderTimeout is left unset for the same class of reason: Ollama may not send
+// response headers until it has loaded the model into memory, which for a large model on
+// a cold start is legitimately minutes.
+func newOllamaHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   ollamaDialTimeout,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			MaxIdleConns:          10,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
+}
+
+// shortOllamaCall derives a bounded context for a metadata request.
+//
+// Chat completions deliberately do not use this: they run on the application context,
+// because a generation has no sensible upper bound. Only the calls that should be fast
+// are made to fail fast.
+func (a *App) shortOllamaCall() (context.Context, context.CancelFunc) {
+	parent := a.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, ollamaShortCallTimeout)
+}
+
 // App holds the Ollama client, active configuration, and DuckDB session store.
 type App struct {
 	ctx   context.Context
@@ -87,7 +146,15 @@ type App struct {
 	// mem is the memory subsystem. Non-nil once startup has run; embeddings may
 	// still be unavailable inside it, which is a reported state rather than an
 	// error — see memory.System.
-	mem *memory.System
+	//
+	// memMu guards it, because the frontend can call a memory RPC before startup has
+	// finished building it: Wails serves the UI while OnStartup is still running, and
+	// NewSystem loads a 133 MB model. Without the lock that is a data race; without
+	// memInitErr the UI cannot tell "still starting" from "failed", and it latched the
+	// first error forever.
+	memMu      sync.RWMutex
+	mem        *memory.System
+	memInitErr error
 
 	// extractModel is the model memory's entity pass uses, from config.json. Empty
 	// leaves that pass disabled.
@@ -107,6 +174,10 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
+	// OnStartup runs after the GUI toolkit is up, so a handler lost between main() entry
+	// and here was clobbered by GTK/WebKit or something they pull in.
+	probeSignals("startup: GUI is up")
+
 	addr := os.Getenv("OLLAMA_HOST")
 	if addr == "" {
 		addr = a.addr
@@ -115,36 +186,88 @@ func (a *App) startup(ctx context.Context) {
 	u, err := url.Parse(addr)
 	if err != nil {
 		slog.Error("invalid Ollama address", "addr", addr, "error", err)
+		a.setMemInitErr(fmt.Errorf("invalid Ollama address %q: %w", addr, err))
 		return
 	}
 
-	hc := &http.Client{}
-	a.cli = api.NewClient(u, hc)
+	a.cli = api.NewClient(u, newOllamaHTTPClient())
 	slog.Info("Ollama client ready", "addr", addr)
 
+	probeSignals("startup: before store.Open")
 	ds, err := store.Open()
 	if err != nil {
 		slog.Error("db init failed", "error", err)
+		a.setMemInitErr(fmt.Errorf("database could not be opened: %w", err))
 		return
 	}
 	a.sess = ds
+	probeSignals("startup: after store.Open")
 	slog.Info("session store initialized")
 
 	// Memory never blocks startup. NewSystem reports an unprovisioned model or a
 	// missing ONNX Runtime as a state rather than an error, so the app is fully
 	// usable either way and retrieval simply falls back to its non-vector signals.
-	a.mem = memory.NewSystem(ds, memory.Config{
+	mem := memory.NewSystem(ds, memory.Config{
 		OllamaClient: a.cli,
 		ExtractModel: a.extractModel,
 	}, func(p memory.Progress) {
 		wailsruntime.EventsEmit(a.ctx, "memory:progress", p)
 	})
-	if a.mem.EmbeddingsAvailable() {
-		slog.Info("memory ready", "chunker", a.mem.Ingester.ChunkerName(),
-			"tokenizer", a.mem.Ingester.TokenCounterName())
+	a.memMu.Lock()
+	a.mem = mem
+	a.memMu.Unlock()
+
+	probeSignals("startup: after memory.NewSystem")
+	if mem.EmbeddingsAvailable() {
+		slog.Info("memory ready", "chunker", mem.Ingester.ChunkerName(),
+			"tokenizer", mem.Ingester.TokenCounterName())
 	} else {
-		slog.Warn("memory ready without embeddings", "reason", a.mem.UnavailableReason())
+		slog.Warn("memory ready without embeddings", "reason", mem.UnavailableReason())
 	}
+	// Tells a UI that rendered during startup to try again. Without it the Memory tab
+	// shows whatever it found on its single attempt, which during a slow model load is
+	// "not initialized" — permanently.
+	wailsruntime.EventsEmit(a.ctx, "memory:ready", true)
+}
+
+// setMemInitErr records why startup could not build memory, so the UI can show the
+// real cause. Both early returns in startup are silent to the frontend otherwise.
+func (a *App) setMemInitErr(err error) {
+	a.memMu.Lock()
+	a.memInitErr = err
+	a.memMu.Unlock()
+	if a.ctx != nil {
+		wailsruntime.EventsEmit(a.ctx, "memory:ready", false)
+	}
+}
+
+// memory returns the subsystem, or an error explaining why it is not available yet.
+//
+// Every memory RPC goes through this. The distinction it draws matters to the UI: a
+// subsystem that is *still starting* warrants a retry, while one that failed to build
+// warrants showing the reason and stopping. Returning the same "not initialized" for
+// both is what made a startup race look like a permanent breakage.
+func (a *App) memory() (*memory.System, error) {
+	a.memMu.RLock()
+	defer a.memMu.RUnlock()
+	if a.mem != nil {
+		return a.mem, nil
+	}
+	if a.memInitErr != nil {
+		return nil, fmt.Errorf("memory could not start: %w", a.memInitErr)
+	}
+	return nil, errMemoryStarting
+}
+
+// errMemoryStarting is the retryable case: startup has not reached memory yet.
+var errMemoryStarting = errors.New("memory is still starting")
+
+// MemoryReady reports whether the subsystem is up, so the UI can poll cheaply while
+// startup finishes rather than guessing from a failed call.
+func (a *App) MemoryReady() bool {
+	a.memMu.RLock()
+	defer a.memMu.RUnlock()
+	return a.mem != nil
 }
 
 // shutdown releases the memory subsystem. Wired from main.go's OnShutdown.
@@ -177,22 +300,163 @@ func (a *App) hasMemory() bool {
 // MemoryStatus reports subsystem state for the UI, including why embeddings are off
 // when they are.
 func (a *App) MemoryStatus() (memory.Status, error) {
-	if a.mem == nil {
-		return memory.Status{}, fmt.Errorf("memory not initialized")
+	mem, err := a.memory()
+	if err != nil {
+		return memory.Status{}, err
 	}
-	return a.mem.Status()
+	return mem.Status()
+}
+
+// SelectMemoryDirectory opens a directory picker and queues the chosen folder for
+// ingestion into memory.
+//
+// Deliberately separate from SelectDirectory, which sets the *file tools* sandbox.
+// They are different concepts that happen to both pick a folder: the file-tool root is
+// where the model may read and write, while this is a corpus to index. Reusing one
+// picker would mean indexing a vault silently granted write access to it, which is not
+// a trade a user should make by accident.
+//
+// Returns the chosen directory, or "" if the dialog was cancelled.
+func (a *App) SelectMemoryDirectory() (string, error) {
+	// Checked before opening the dialog, so a user is not asked to pick a folder that
+	// then cannot be indexed.
+	if _, err := a.memory(); err != nil {
+		return "", err
+	}
+	dir, err := wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Select a folder of Markdown notes to index",
+	})
+	if err != nil {
+		return "", fmt.Errorf("open directory dialog: %w", err)
+	}
+	if dir == "" {
+		return "", nil
+	}
+	if _, err := a.IngestDirectory(dir); err != nil {
+		return dir, err
+	}
+	return dir, nil
+}
+
+// ProvisionMemoryModel downloads and verifies the embedding model, then turns semantic
+// search on without a restart.
+//
+// User-initiated, per §3.1a: memory is opt-in and an unannounced 133 MB request to
+// huggingface.co on first launch would be surprising in a local-first app. Progress
+// arrives on the `memory:provision` event channel, including the failure reason — which
+// matters because the most likely failure is not the download but the ONNX Runtime being
+// missing or too old, and that needs a different fix.
+func (a *App) ProvisionMemoryModel() (bool, error) {
+	mem, err := a.memory()
+	if err != nil {
+		return false, err
+	}
+	return mem.EnqueueProvisionModel(memory.Config{}, func(p memory.ProvisionProgress) {
+		wailsruntime.EventsEmit(a.ctx, "memory:provision", p)
+	})
+}
+
+// MemoryModelInfo describes what provisioning would fetch and where it would go, so the
+// UI can state the size and destination before asking for a 133 MB download rather than
+// after starting one.
+type MemoryModelInfo struct {
+	Name      string `json:"name"`
+	Revision  string `json:"revision"`
+	Bytes     int64  `json:"bytes"`
+	TargetDir string `json:"targetDir"`
+	Present   bool   `json:"present"`
+}
+
+// MemoryModelInfo reports the model's identity and whether it is already present.
+func (a *App) GetMemoryModelInfo() (MemoryModelInfo, error) {
+	dir, err := memory.ModelTargetDir()
+	if err != nil {
+		return MemoryModelInfo{}, err
+	}
+	info := MemoryModelInfo{
+		Name: memory.ModelDirName, Revision: memory.ModelRevision,
+		Bytes: memory.ModelBytes, TargetDir: dir,
+	}
+	if _, err := memory.FindModel(); err == nil {
+		info.Present = true
+	}
+	return info, nil
+}
+
+// MemorySources lists what has been indexed, newest first, so the corpus is
+// inspectable without opening the database.
+func (a *App) MemorySources() ([]store.MemorySource, error) {
+	mem, err := a.memory()
+	if err != nil {
+		return nil, err
+	}
+	return mem.Store.ListSources()
+}
+
+// ForgetMemorySource deletes one source and everything derived from it.
+func (a *App) ForgetMemorySource(sourceID string) error {
+	mem, err := a.memory()
+	if err != nil {
+		return err
+	}
+	if sourceID == "" {
+		return fmt.Errorf("source id is required")
+	}
+	return mem.Store.DeleteSource(sourceID)
+}
+
+// ForgetMemoryFolder deletes every indexed note under a folder.
+//
+// The counterpart to indexing the wrong folder, and the unit the UI works in — a vault
+// is thousands of sources, so per-source deletion is not an undo a person can use.
+// Without this the only way to reverse an ingest is to edit the database by hand, which
+// is exactly what Phase 9 exists to make unnecessary.
+//
+// Matching is by the stored absolute path, so a folder that has since been renamed on
+// disk is still forgettable: the rows remember where they came from.
+func (a *App) ForgetMemoryFolder(path string) (int, error) {
+	mem, err := a.memory()
+	if err != nil {
+		return 0, err
+	}
+	if path == "" {
+		return 0, fmt.Errorf("folder path is required")
+	}
+	sources, err := mem.Store.ListSources()
+	if err != nil {
+		return 0, err
+	}
+	prefix := strings.TrimRight(path, `/\`)
+	removed := 0
+	for _, s := range sources {
+		if s.SourceType != store.SourceDirectory || s.Path == "" {
+			continue
+		}
+		// Prefix match on a path boundary, so "/vault" cannot swallow "/vault-archive".
+		rest := strings.TrimPrefix(s.Path, prefix)
+		if rest == s.Path || (rest != "" && rest[0] != '/' && rest[0] != '\\') {
+			continue
+		}
+		if err := mem.Store.DeleteSource(s.ID); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	slog.Info("forgot indexed folder", "path", prefix, "sources_removed", removed)
+	return removed, nil
 }
 
 // IngestDirectory queues a directory scan. Returns immediately: the work runs on the
 // memory queue's single worker so it cannot stall a chat turn.
 func (a *App) IngestDirectory(path string) (bool, error) {
-	if a.mem == nil {
-		return false, fmt.Errorf("memory not initialized")
+	mem, err := a.memory()
+	if err != nil {
+		return false, err
 	}
 	if path == "" {
 		return false, fmt.Errorf("no directory given")
 	}
-	return a.mem.EnqueueDirectoryIngest(path, func(rep memory.IngestReport) {
+	return mem.EnqueueDirectoryIngest(path, func(rep memory.IngestReport) {
 		wailsruntime.EventsEmit(a.ctx, "memory:ingested", rep)
 	})
 }
@@ -201,13 +465,190 @@ func (a *App) IngestDirectory(path string) (bool, error) {
 // quality can be inspected directly, which is also the control for measuring how
 // often the model actually invokes the tool.
 func (a *App) SearchMemoryManual(query string, limit int) ([]memory.Result, error) {
-	if a.mem == nil {
-		return nil, fmt.Errorf("memory not initialized")
+	res, err := a.SearchMemoryTuned(query, limit, MemorySearchTuning{})
+	if err != nil {
+		return nil, err
 	}
-	results, _, err := a.mem.Search(context.Background(), query, memory.SearchOptions{
+	return res.Results, nil
+}
+
+// MemorySearchTuning exposes the retrieval knobs to the UI.
+//
+// Zero fields mean "use the defaults", so the common case sends nothing. The point is
+// that the weights are *not settled* — they were tuned in Phase 4 against an entity
+// signal that has since changed character — and §3.5 is explicit that without a visible
+// score breakdown, tuning them is guesswork. Making them adjustable next to the
+// breakdown is what turns that guesswork into an experiment a user can run.
+type MemorySearchTuning struct {
+	BM25   float64 `json:"bm25"`
+	Vector float64 `json:"vector"`
+	Entity float64 `json:"entity"`
+	Ngram  float64 `json:"ngram"`
+	// Mode is "weighted" or "rrf"; empty uses the default.
+	Mode string `json:"mode"`
+	// Expand toggles the graph walk. Defaults on, matching the tool.
+	Expand *bool `json:"expand"`
+	// SourceTypes restricts to directory|conversation|artifact; empty means all.
+	SourceTypes []string `json:"sourceTypes"`
+}
+
+// MemorySearchResponse pairs results with the report that explains them.
+//
+// The report is the interesting half for a user testing retrieval: it says how many
+// candidates each arm produced, which query entities were recognized, what the graph
+// walk did, and why the vector arm was skipped when it was. A bare result list cannot
+// distinguish "nothing matched" from "embeddings are unavailable".
+type MemorySearchResponse struct {
+	Results []memory.Result     `json:"results"`
+	Report  memory.SearchReport `json:"report"`
+}
+
+// SearchMemoryTuned runs a search with explicit knobs and returns the full report.
+func (a *App) SearchMemoryTuned(query string, limit int, t MemorySearchTuning) (MemorySearchResponse, error) {
+	mem, err := a.memory()
+	if err != nil {
+		return MemorySearchResponse{}, err
+	}
+	if limit <= 0 {
+		limit = 8
+	}
+	opts := memory.SearchOptions{
 		Limit: limit, Explain: true, Expand: true,
+		Mode: memory.FusionMode(t.Mode), SourceTypes: t.SourceTypes,
+	}
+	if t.Expand != nil {
+		opts.Expand = *t.Expand
+	}
+	// All four at zero is the zero value, which withDefaults reads as "unset". Any
+	// nonzero weight means the caller is driving.
+	if t.BM25 != 0 || t.Vector != 0 || t.Entity != 0 || t.Ngram != 0 {
+		opts.Weights = memory.Weights{
+			BM25: t.BM25, Vector: t.Vector, Entity: t.Entity, Ngram: t.Ngram,
+		}
+	}
+	results, rep, err := mem.Search(context.Background(), query, opts)
+	if err != nil {
+		return MemorySearchResponse{}, err
+	}
+	return MemorySearchResponse{Results: results, Report: rep}, nil
+}
+
+// DefaultMemoryWeights reports the current defaults, so the UI's tuning controls start
+// from what the system actually uses rather than from hardcoded copies that drift.
+func (a *App) DefaultMemoryWeights() MemorySearchTuning {
+	w := memory.DefaultWeights()
+	return MemorySearchTuning{
+		BM25: w.BM25, Vector: w.Vector, Entity: w.Entity, Ngram: w.Ngram,
+		Mode: string(memory.FusionWeighted),
+	}
+}
+
+// IndexExistingHistory indexes the sessions and artifacts that already exist.
+//
+// Phase 7 wired ingestion to *events* — a turn completing, an artifact being created —
+// which means a user who had history before memory existed has none of it indexed, and
+// never will: nothing replays the past. That reads as "memory doesn't work for my
+// existing chats", which is exactly right, and it is the first thing anyone with an
+// established database hits.
+//
+// Idempotent by construction, so running it repeatedly is safe and cheap: every turn
+// and artifact is content-hashed, and an unchanged one is skipped. Queued as a single
+// job on the same single worker, so it cannot race an ongoing ingest.
+func (a *App) IndexExistingHistory() (bool, error) {
+	mem, err := a.memory()
+	if err != nil {
+		return false, err
+	}
+	sessions, err := a.sess.GetSessions()
+	if err != nil {
+		return false, err
+	}
+	return mem.Queue.Enqueue(memory.Job{
+		Kind: "backfill-history",
+		Key:  "backfill-history",
+		Run: func(ctx context.Context) error {
+			var turns, artifacts int
+			for _, sess := range sessions {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				msgs, err := a.sess.GetMessages(sess.ID)
+				if err != nil {
+					slog.Warn("skipping session during history backfill",
+						"session", sess.ID, "error", err)
+					continue
+				}
+				rep, err := mem.Ingester.IngestTurns(ctx, sess.ID, sess.Title, msgs)
+				if err != nil {
+					slog.Warn("history backfill failed for a session",
+						"session", sess.ID, "error", err)
+					continue
+				}
+				turns += rep.TurnsIngested
+
+				metas, err := a.sess.GetArtifactsForSession(sess.ID)
+				if err != nil {
+					continue
+				}
+				for _, m := range metas {
+					art, err := a.sess.GetArtifact(m.ID)
+					if err != nil {
+						continue
+					}
+					if n, err := mem.Ingester.IngestArtifact(ctx, art); err != nil {
+						slog.Warn("history backfill failed for an artifact",
+							"artifact", m.ID, "error", err)
+					} else if n > 0 {
+						artifacts++
+					}
+				}
+			}
+			slog.Info("history backfill complete",
+				"sessions", len(sessions), "turns", turns, "artifacts", artifacts)
+			wailsruntime.EventsEmit(a.ctx, "memory:backfilled", map[string]any{
+				"sessions": len(sessions), "turns": turns, "artifacts": artifacts,
+			})
+			// Embed and link what was written, the same way a directory ingest does.
+			if mem.EmbeddingsAvailable() {
+				if _, err := mem.Backfill(ctx, 0, nil); err != nil {
+					return err
+				}
+			}
+			_, err := mem.BuildEdges(ctx, nil, memory.EdgeParams{})
+			return err
+		},
 	})
-	return results, err
+}
+
+// UnindexedHistoryCount reports how many sessions and artifacts exist but have no
+// memory source, so the UI can offer the backfill only when there is something to do.
+func (a *App) UnindexedHistoryCount() (int, error) {
+	mem, err := a.memory()
+	if err != nil {
+		return 0, err
+	}
+	sessions, err := a.sess.GetSessions()
+	if err != nil {
+		return 0, err
+	}
+	indexed := map[string]bool{}
+	sources, err := mem.Store.ListSources()
+	if err != nil {
+		return 0, err
+	}
+	for _, s := range sources {
+		if s.SessionID != "" {
+			indexed[s.SessionID] = true
+		}
+	}
+	n := 0
+	for _, sess := range sessions {
+		// MessageCount 0 means an empty session, which has nothing to index.
+		if sess.MessageCount > 0 && !indexed[sess.ID] {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // EnrichMemoryEntities queues the LLM entity pass over sources that have not had it.
@@ -221,10 +662,11 @@ func (a *App) SearchMemoryManual(query string, limit int) ([]memory.Result, erro
 // "start it" call rather than a "run it all" call. limit caps one batch; 0 uses the
 // default.
 func (a *App) EnrichMemoryEntities(limit int) (bool, error) {
-	if a.mem == nil {
-		return false, fmt.Errorf("memory not initialized")
+	mem, err := a.memory()
+	if err != nil {
+		return false, err
 	}
-	return a.mem.EnqueueEnrichment(limit, func(rep memory.EnrichReport) {
+	return mem.EnqueueEnrichment(limit, func(rep memory.EnrichReport) {
 		wailsruntime.EventsEmit(a.ctx, "memory:enriched", rep)
 	})
 }
@@ -236,14 +678,15 @@ func (a *App) EnrichMemoryEntities(limit int) (bool, error) {
 // possible: if a model turns out to extract badly, the whole tier can go without
 // disturbing the heuristic and tag entities search has always used.
 func (a *App) RollbackMemoryEntityEnrichment() (int64, error) {
-	if a.mem == nil {
-		return 0, fmt.Errorf("memory not initialized")
-	}
-	n, err := a.mem.Store.DeleteChunkEntitiesByExtractor(memory.ExtractorLLM)
+	mem, err := a.memory()
 	if err != nil {
 		return 0, err
 	}
-	if err := a.mem.Store.ResetEntityPass(); err != nil {
+	n, err := mem.Store.DeleteChunkEntitiesByExtractor(memory.ExtractorLLM)
+	if err != nil {
+		return 0, err
+	}
+	if err := mem.Store.ResetEntityPass(); err != nil {
 		return n, err
 	}
 	slog.Info("rolled back the LLM entity tier", "associations_removed", n)
@@ -258,10 +701,11 @@ func (a *App) RollbackMemoryEntityEnrichment() (int64, error) {
 // Link edges are not rebuilt here — resolving them needs the vault index that only
 // exists during a directory walk. Re-run the ingest to refresh those.
 func (a *App) RebuildMemoryEdges() (bool, error) {
-	if a.mem == nil {
-		return false, fmt.Errorf("memory not initialized")
+	mem, err := a.memory()
+	if err != nil {
+		return false, err
 	}
-	return a.mem.EnqueueEdgeBuild(nil)
+	return mem.EnqueueEdgeBuild(nil)
 }
 
 // GetModel returns the currently selected model name.
@@ -285,9 +729,16 @@ func (a *App) ListModels() ([]string, error) {
 		return nil, fmt.Errorf("Ollama client not initialized")
 	}
 
-	resp, err := a.cli.List(a.ctx)
+	ctx, cancel := a.shortOllamaCall()
+	defer cancel()
+
+	resp, err := a.cli.List(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list models: %w", err)
+		// Reported rather than retried, and phrased so the endpoint is visible: the
+		// overwhelmingly common cause is a wrong or unreachable ollama_endpoint, and the
+		// model picker showing "unreachable at <addr>" is the difference between a
+		// two-second fix and a mystery.
+		return nil, fmt.Errorf("could not reach Ollama at %s: %w", a.addr, err)
 	}
 
 	names := make([]string, 0, len(resp.Models))

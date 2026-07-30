@@ -71,8 +71,10 @@ type Weights struct {
 // changed.** Two fixes altered the entity signal's behaviour: query-side extraction
 // became a dictionary lookup rather than a capitalization guess, and the proper-noun
 // regex stopped matching across line breaks. The entity signal improved substantially
-// (entity-only MRR ~0.16 -> ~0.29) and these same weights now score MRR 0.630, R@1
-// 0.520, R@5 0.760. An 18-point re-sweep put the best setting at 0.30/0.45/0.05/0.20
+// (entity-only MRR ~0.16 -> ~0.29) and these same weights scored MRR 0.630, R@1 0.520,
+// R@5 0.760 at the time — 0.607 / 0.480 / 0.760 after Phase 9's documentation edits
+// changed the eval corpus, which is read live from the repository's own Markdown. Treat
+// the ordering of a sweep as the signal and absolute values as corpus-dependent. An 18-point re-sweep put the best setting at 0.30/0.45/0.05/0.20
 // (MRR 0.643, R@5 0.800) — a 0.013 improvement, inside the noise floor, with the top
 // four candidates separated by one rank position on one query.
 //

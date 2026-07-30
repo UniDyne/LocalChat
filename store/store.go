@@ -136,6 +136,22 @@ func OpenAt(path string) (*Store, error) {
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
 
+	// Bound the connection pool.
+	//
+	// `database/sql` defaults to *unlimited* open connections, opening a new one per
+	// concurrent query. For a client/server database that is reasonable; for an embedded
+	// single-writer engine reached through cgo it is not, because every in-flight query
+	// pins an OS thread inside native code for its duration. A burst of concurrent
+	// queries therefore turns into a burst of threads sitting in DuckDB, which is both
+	// wasteful and a much worse failure mode than waiting.
+	//
+	// Four is enough for the access pattern: one background worker doing bulk writes
+	// (serialized by writeMu anyway) and a handful of short UI reads. Anything beyond
+	// that queues in Go, where it is visible and cheap, rather than in cgo.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
 	s := &Store{db: db}
 
 	if err := applySchema(db); err != nil {

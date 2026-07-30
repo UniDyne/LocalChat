@@ -42,12 +42,13 @@ func initORT() (string, string, error) {
 		ort.SetSharedLibraryPath(ortPath)
 		if err := ort.InitializeEnvironment(); err != nil {
 			// The most likely cause is a version floor: the binding compiles in a
-			// required API version and an older library rejects it. Say so,
-			// because "initialization failed" alone is very hard to act on.
+			// required API version and an older library rejects it. Say so, and name
+			// the floor, because "initialization failed" alone is very hard to act on.
 			ortErr = &ErrUnavailable{
-				Reason: fmt.Sprintf("ONNX Runtime at %s could not be initialized "+
-					"(often means the library is older than this build requires; "+
-					"bundle a newer libonnxruntime or set ONNXRUNTIME_LIB)", ortPath),
+				Reason: fmt.Sprintf("ONNX Runtime at %s could not be initialized. "+
+					"This build requires ORT %s or newer (it requests API version %d); "+
+					"install a newer libonnxruntime or point ONNXRUNTIME_LIB at one",
+					ortPath, MinORTVersion, RequiredORTAPIVersion),
 				Err: err,
 			}
 		}

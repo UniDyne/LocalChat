@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -583,5 +586,52 @@ func TestONNXEmbedder(t *testing.T) {
 		t.Errorf("empty input failed: %v", err)
 	} else if math.Abs(vecNorm(vs[0])-1) > 1e-5 {
 		t.Errorf("empty input norm = %v", vecNorm(vs[0]))
+	}
+}
+
+// TestORTAPIVersionMatchesPinnedBinding guards the version floor against a silent bump.
+//
+// onnxruntime_go compiles ORT_API_VERSION in from its bundled header and gives no way to
+// request less, so the *binding* decides the minimum ONNX Runtime a user needs. Phase 0
+// shipped v1.31.0, which requests API 26 and therefore rejected Debian's ORT 1.21
+// outright; the binding is now pinned to v1.19.0 (API 21) so the distro package works.
+//
+// The trap this test exists for: the binding's own version number does not track the API
+// it requests — v1.19.0 asks for 21 and v1.20.0 asks for 22 — so a routine-looking
+// dependency bump can raise the floor and break every Debian 13 user, with the failure
+// appearing only at runtime on a machine that has the older library. Reading the header
+// is the only reliable check.
+func TestORTAPIVersionMatchesPinnedBinding(t *testing.T) {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}",
+		"github.com/yalue/onnxruntime_go").Output()
+	if err != nil {
+		t.Skipf("cannot locate the binding module: %v", err)
+	}
+	header := filepath.Join(strings.TrimSpace(string(out)), "onnxruntime_c_api.h")
+	src, err := os.ReadFile(header)
+	if err != nil {
+		t.Skipf("cannot read %s: %v", header, err)
+	}
+
+	m := regexp.MustCompile(`#define\s+ORT_API_VERSION\s+(\d+)`).FindSubmatch(src)
+	if m == nil {
+		t.Fatalf("no ORT_API_VERSION in %s", header)
+	}
+	got, err := strconv.Atoi(string(m[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("pinned binding requests ORT_API_VERSION %d (floor: ORT %s)", got, MinORTVersion)
+
+	if got != RequiredORTAPIVersion {
+		t.Errorf("the binding requests ORT_API_VERSION %d but RequiredORTAPIVersion says %d.\n"+
+			"If the binding was upgraded deliberately, update both constants and the README's "+
+			"stated minimum — but note that raising the floor above 21 breaks Debian 13, whose "+
+			"libonnxruntime1.21 package caps at API 21.", got, RequiredORTAPIVersion)
+	}
+	if got > 21 {
+		t.Errorf("ORT_API_VERSION %d requires ONNX Runtime newer than 1.21, so the distro "+
+			"package on Debian 13 will be rejected at InitializeEnvironment. Pin the binding "+
+			"back down (v1.19.0 is the newest that requests 21).", got)
 	}
 }
