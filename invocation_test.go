@@ -179,6 +179,12 @@ func askOnce(cli *api.Client, model string, tools api.Tools, question string) (b
 	var called bool
 	err := cli.Chat(ctx, &api.ChatRequest{
 		Model: model, Messages: msgs, Stream: &stream, Think: &think, Tools: tools,
+		// Temperature 0, because this is a measurement and it was not reproducible
+		// without it: the same model scored 8/8 on one run and 7/8 on the next, which is
+		// a whole question of apparent difference produced by sampling alone. A rate
+		// that moves run to run cannot support a claim about whether the tool
+		// description works. OllamaExtractor pins it for the same reason.
+		Options: map[string]any{"temperature": 0},
 	}, func(resp api.ChatResponse) error {
 		reply.WriteString(resp.Message.Content)
 		for _, tc := range resp.Message.ToolCalls {
