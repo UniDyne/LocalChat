@@ -153,6 +153,75 @@
   .artifact-meta{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--text-muted)}
   .artifact-type-badge{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:1px 5px;text-transform:uppercase;letter-spacing:.5px}
 
+  /* Memory tab */
+  .mem-heading{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);padding:8px 8px 4px;border-top:1px solid var(--border);margin-top:6px}
+  .mem-section{padding:6px 8px}
+  .mem-row{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;font-size:11px}
+  .mem-ok{color:var(--success)}
+  .mem-warn{color:var(--loading)}
+  .mem-dim{font-size:10px;color:var(--text-muted);word-break:break-word}
+  .mem-reason{font-size:10px;color:var(--text-secondary);background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:4px 6px;margin-top:4px;line-height:1.4;word-break:break-word}
+  .mem-busy{font-size:10px;color:var(--loading);margin-top:3px}
+  .mem-progress{margin-top:2px}
+  .mem-hint{font-size:10px;color:var(--text-secondary);padding:0 8px 6px;line-height:1.4}
+
+  .mem-provision{padding:4px 8px 6px}
+  .mem-provision button{background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:5px 9px;font-size:11px;font-family:var(--font-ui);cursor:pointer;width:100%}
+  .mem-provision button:hover{background:var(--accent-hover)}
+  .mem-provision .mem-dim{margin-top:3px;word-break:break-all}
+
+  .mem-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border);margin:4px 0}
+  .mem-stats>div{background:var(--bg-secondary);padding:4px 6px;display:flex;flex-direction:column;align-items:center}
+  .mem-stats b{font-size:13px;color:var(--text-primary);font-variant-numeric:tabular-nums}
+  .mem-stats span{font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px}
+  .mem-edges{padding:0 8px 4px}
+
+  .mem-actions{display:flex;gap:4px;flex-wrap:wrap;padding:4px 8px 8px}
+  .mem-actions button{background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:4px 8px;font-size:11px;font-family:var(--font-ui);cursor:pointer}
+  .mem-actions button:hover{background:var(--accent-hover)}
+  .mem-actions button.mem-secondary{background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border)}
+  .mem-actions button.mem-secondary:hover{background:var(--bg-hover);color:var(--text-primary)}
+
+  #memorySearchInput{width:calc(100% - 16px);margin:0 8px;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius);padding:5px 7px;font-size:12px;font-family:var(--font-ui)}
+  #memorySearchInput:focus{outline:none;border-color:var(--accent)}
+
+  .mem-tuning{margin:6px 8px;font-size:11px}
+  .mem-tuning summary{cursor:pointer;color:var(--text-secondary);font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+  .mem-tuning-note{margin:4px 0 6px;line-height:1.4}
+  .mem-weight{display:flex;align-items:center;gap:6px;margin-bottom:3px}
+  .mem-weight>span{width:44px;color:var(--text-muted);font-size:10px}
+  .mem-weight input[type=range]{flex:1;accent-color:var(--accent)}
+  .mem-weight output{width:30px;text-align:right;color:var(--text-secondary);font-size:10px;font-variant-numeric:tabular-nums}
+  .mem-toggle{display:flex;align-items:center;gap:5px;color:var(--text-secondary);font-size:10px;margin:3px 0}
+  .mem-tuning button{margin-top:5px;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:3px 7px;font-size:10px;cursor:pointer}
+
+  .mem-report{padding:6px 8px 2px}
+  .mem-result{padding:6px 8px;border-bottom:1px solid var(--border)}
+  .mem-result-head{display:flex;align-items:baseline;gap:5px}
+  .mem-result-rank{color:var(--text-muted);font-size:10px;font-variant-numeric:tabular-nums}
+  .mem-result-title{flex:1;font-size:12px;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mem-result-score{font-size:10px;color:var(--text-secondary);font-variant-numeric:tabular-nums}
+  .mem-result-meta{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin:2px 0 3px}
+  .mem-badge{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:0 4px;font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px}
+  .mem-via{background:var(--bg-tertiary);border:1px dashed var(--accent);border-radius:var(--radius);padding:0 4px;font-size:9px;color:var(--accent-hover)}
+  .mem-result-text{font-size:11px;color:var(--text-secondary);line-height:1.45;max-height:74px;overflow:hidden;white-space:pre-wrap;word-break:break-word}
+
+  /* Four-signal breakdown. Without it, tuning the weights is guesswork (plan 3.5). */
+  .mem-signals{display:flex;gap:5px;margin-bottom:3px}
+  .mem-sig{display:flex;align-items:center;gap:2px;flex:1}
+  .mem-sig-label{font-size:9px;color:var(--text-muted);width:7px}
+  .mem-sig-bar{flex:1;height:3px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden}
+  .mem-sig-bar i{display:block;height:100%;background:var(--accent-hover)}
+
+  .mem-inline-btn{background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:2px 6px;font-size:10px;font-family:var(--font-ui);cursor:pointer;margin-left:4px}
+  .mem-inline-btn:hover{background:var(--accent-hover)}
+
+  .mem-source{display:flex;align-items:center;gap:6px;padding:5px 8px;border-bottom:1px solid var(--border)}
+  .mem-source-main{flex:1;min-width:0}
+  .mem-source-title{font-size:11px;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+  .mem-source button{background:none;border:1px solid var(--border);color:var(--text-muted);border-radius:var(--radius);cursor:pointer;font-size:11px;padding:1px 5px}
+  .mem-source button:hover{color:var(--text-primary);background:var(--bg-hover)}
+
   /* Artifact preview overlay */
   .artifact-preview-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000}
   .artifact-preview-panel{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);width:min(720px,90vw);max-height:80vh;display:flex;flex-direction:column;overflow:hidden}

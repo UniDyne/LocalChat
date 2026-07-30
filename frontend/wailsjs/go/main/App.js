@@ -14,8 +14,24 @@ export function CreateSession() {
   return window['go']['main']['App']['CreateSession']();
 }
 
+export function DefaultMemoryWeights() {
+  return window['go']['main']['App']['DefaultMemoryWeights']();
+}
+
 export function DeleteSession(arg1) {
   return window['go']['main']['App']['DeleteSession'](arg1);
+}
+
+export function EnrichMemoryEntities(arg1) {
+  return window['go']['main']['App']['EnrichMemoryEntities'](arg1);
+}
+
+export function ForgetMemoryFolder(arg1) {
+  return window['go']['main']['App']['ForgetMemoryFolder'](arg1);
+}
+
+export function ForgetMemorySource(arg1) {
+  return window['go']['main']['App']['ForgetMemorySource'](arg1);
 }
 
 export function GetArtifactContent(arg1) {
@@ -32,6 +48,10 @@ export function GetCotMode() {
 
 export function GetCurrentSession() {
   return window['go']['main']['App']['GetCurrentSession']();
+}
+
+export function GetMemoryModelInfo() {
+  return window['go']['main']['App']['GetMemoryModelInfo']();
 }
 
 export function GetMessages(arg1) {
@@ -58,6 +78,14 @@ export function GetWorkDir() {
   return window['go']['main']['App']['GetWorkDir']();
 }
 
+export function IndexExistingHistory() {
+  return window['go']['main']['App']['IndexExistingHistory']();
+}
+
+export function IngestDirectory(arg1) {
+  return window['go']['main']['App']['IngestDirectory'](arg1);
+}
+
 export function ListCotModes() {
   return window['go']['main']['App']['ListCotModes']();
 }
@@ -70,8 +98,32 @@ export function ListSkills() {
   return window['go']['main']['App']['ListSkills']();
 }
 
+export function MemoryReady() {
+  return window['go']['main']['App']['MemoryReady']();
+}
+
+export function MemorySources() {
+  return window['go']['main']['App']['MemorySources']();
+}
+
+export function MemoryStatus() {
+  return window['go']['main']['App']['MemoryStatus']();
+}
+
+export function ProvisionMemoryModel() {
+  return window['go']['main']['App']['ProvisionMemoryModel']();
+}
+
+export function RebuildMemoryEdges() {
+  return window['go']['main']['App']['RebuildMemoryEdges']();
+}
+
 export function RenameSession(arg1, arg2) {
   return window['go']['main']['App']['RenameSession'](arg1, arg2);
+}
+
+export function RollbackMemoryEntityEnrichment() {
+  return window['go']['main']['App']['RollbackMemoryEntityEnrichment']();
 }
 
 export function SaveArtifact(arg1) {
@@ -82,8 +134,20 @@ export function SaveMessage(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveMessage'](arg1, arg2, arg3);
 }
 
+export function SearchMemoryManual(arg1, arg2) {
+  return window['go']['main']['App']['SearchMemoryManual'](arg1, arg2);
+}
+
+export function SearchMemoryTuned(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SearchMemoryTuned'](arg1, arg2, arg3);
+}
+
 export function SelectDirectory() {
   return window['go']['main']['App']['SelectDirectory']();
+}
+
+export function SelectMemoryDirectory() {
+  return window['go']['main']['App']['SelectMemoryDirectory']();
 }
 
 export function SendChat(arg1, arg2, arg3, arg4) {
@@ -104,4 +168,8 @@ export function SetModel(arg1) {
 
 export function SwitchSession(arg1) {
   return window['go']['main']['App']['SwitchSession'](arg1);
+}
+
+export function UnindexedHistoryCount() {
+  return window['go']['main']['App']['UnindexedHistoryCount']();
 }

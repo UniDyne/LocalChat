@@ -1,0 +1,267 @@
+[sigprobe] main() entry                       SIGILL=ok SIGBUS=ok SIGFPE=ok SIGSEGV=ok
+Overriding existing handler for signal 10. Set JSC_SIGNAL_FOR_GC if you want WebKit to use a different signal
+src/nv_gbm.c:288: GBM-DRV error (nv_gbm_create_device_native): nv_common_gbm_create_device failed (ret=-1)
+
+[sigprobe] startup: GUI is up                 SIGILL=ok SIGBUS=ok SIGFPE=ok SIGSEGV=ok
+2026/07/29 20:52:13 INFO Ollama client ready addr=http://172.30.3.116:11434
+[sigprobe] startup: before store.Open         SIGILL=ok SIGBUS=ok SIGFPE=ok SIGSEGV=ok
+src/nv_gbm.c:288: GBM-DRV error (nv_gbm_create_device_native): nv_common_gbm_create_device failed (ret=-1)
+
+signal 11 received but handler not on signal stack
+mp.gsignal stack [0x320fdf106000 0x320fdf10e000], mp.g0 stack [0x7ff0fc0f62e0 0x7ff0fc8f5ee0], sp=0x320fdefc6870
+fatal error: non-Go code set up signal handler without SA_ONSTACK flag
+
+runtime stack:
+runtime.throw({0x313d467?, 0x0?})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/panic.go:1229 +0x48 fp=0x320fdefc6798 sp=0x320fdefc6768 pc=0xe38828
+runtime.sigNotOnStack(0xb, 0x320fdefc6870, 0x320fdf100008)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/signal_unix.go:1122 +0x145 fp=0x320fdefc67c8 sp=0x320fdefc6798 pc=0xe1ac05
+runtime.adjustSignalStack2(0xb, 0x320fdefc6870, 0x320fdf100008, 0x0)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/signal_unix.go:607 +0x5b fp=0x320fdefc67f8 sp=0x320fdefc67c8 pc=0xe19d3b
+runtime.adjustSignalStack(0xb, 0x320fdf100008, 0x320fdefc6898)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/signal_unix.go:594 +0x262 fp=0x320fdefc6870 sp=0x320fdefc67f8 pc=0xe19cc2
+runtime.sigtrampgo(0xb, 0x320fdefc6b70, 0x320fdefc6a40)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/signal_unix.go:481 +0xcc fp=0x320fdefc68f0 sp=0x320fdefc6870 pc=0xe1976c
+runtime.sigtramp()
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/sys_linux_amd64.s:364 +0x46 fp=0x320fdefc6940 sp=0x320fdefc68f0 pc=0xe41866
+
+goroutine 17 gp=0x320fdec4e780 m=1 mp=0x320fded12008 [syscall, locked to thread]:
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fded20fe8 sp=0x320fded20fe0 pc=0xe3ffe1
+
+goroutine 1 gp=0x320fdec4e1e0 m=0 mp=0x440f9e0 [syscall, locked to thread]:
+runtime.cgocall(0x13c19a0, 0x320fdec85e60)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/cgocall.go:167 +0x4b fp=0x320fdec85e38 sp=0x320fdec85e00 pc=0xe358ab
+github.com/wailsapp/wails/v2/internal/frontend/desktop/linux._Cfunc_gtk_main()
+	_cgo_gotypes.go:1151 +0x3a fp=0x320fdec85e60 sp=0x320fdec85e38 pc=0x132a25a
+github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.(*Frontend).RunMainLoop(0x320fdeefaa80?)
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:143 +0xf fp=0x320fdec85e70 sp=0x320fdec85e60 pc=0x132c12f
+github.com/wailsapp/wails/v2/internal/app.(*App).Run(0x320fdeefe050)
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/app/app_production.go:19 +0x51 fp=0x320fdec85ea8 sp=0x320fdec85e70 pc=0x133a2d1
+github.com/wailsapp/wails/v2/pkg/application.(*Application).Run(0x320fdee86be0)
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/pkg/application/application.go:73 +0xac fp=0x320fdec85ec8 sp=0x320fdec85ea8 pc=0x133b5cc
+github.com/wailsapp/wails/v2.Run(0x320fded7a180?)
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/wails.go:14 +0x9a fp=0x320fdec85ef0 sp=0x320fdec85ec8 pc=0x133b73a
+main.main()
+	/mnt/data/GitHub/LocalChat/main.go:23 +0x24f fp=0x320fdec85f48 sp=0x320fdec85ef0 pc=0x1346f6f
+runtime.main()
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:290 +0x2d5 fp=0x320fdec85fe0 sp=0x320fdec85f48 pc=0xe039f5
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fdec85fe8 sp=0x320fdec85fe0 pc=0xe3ffe1
+
+goroutine 2 gp=0x320fdec4ed20 m=nil [force gc (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:462 +0xce fp=0x320fded0efa8 sp=0x320fded0ef88 pc=0xe3894e
+runtime.goparkunlock(...)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:468
+runtime.forcegchelper()
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:375 +0xb3 fp=0x320fded0efe0 sp=0x320fded0efa8 pc=0xe03d13
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fded0efe8 sp=0x320fded0efe0 pc=0xe3ffe1
+created by runtime.init.7 in goroutine 1
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:363 +0x1a
+
+goroutine 3 gp=0x320fdec4f2c0 m=nil [GC sweep wait]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:462 +0xce fp=0x320fded0f788 sp=0x320fded0f768 pc=0xe3894e
+runtime.goparkunlock(...)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:468
+runtime.bgsweep(0x320fded38000)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/mgcsweep.go:279 +0x94 fp=0x320fded0f7c8 sp=0x320fded0f788 pc=0xded914
+runtime.gcenable.gowrap1()
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/mgc.go:214 +0x17 fp=0x320fded0f7e0 sp=0x320fded0f7c8 pc=0xdded77
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fded0f7e8 sp=0x320fded0f7e0 pc=0xe3ffe1
+created by runtime.gcenable in goroutine 1
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/mgc.go:214 +0x66
+
+goroutine 4 gp=0x320fdec4f4a0 m=nil [GC scavenge wait]:
+runtime.gopark(0x320fded38000?, 0x318b810?, 0x1?, 0x0?, 0x320fdec4f4a0?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:462 +0xce fp=0x320fded0ff78 sp=0x320fded0ff58 pc=0xe3894e
+runtime.goparkunlock(...)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:468
+runtime.(*scavengerState).park(0x440de60)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/mgcscavenge.go:425 +0x49 fp=0x320fded0ffa8 sp=0x320fded0ff78 pc=0xdeb449
+runtime.bgscavenge(0x320fded38000)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/mgcscavenge.go:653 +0x3c fp=0x320fded0ffc8 sp=0x320fded0ffa8 pc=0xdeb9bc
+runtime.gcenable.gowrap2()
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/mgc.go:215 +0x17 fp=0x320fded0ffe0 sp=0x320fded0ffc8 pc=0xdded37
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fded0ffe8 sp=0x320fded0ffe0 pc=0xe3ffe1
+created by runtime.gcenable in goroutine 1
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/mgc.go:215 +0xa5
+
+goroutine 5 gp=0x320fdec4fa40 m=nil [GOMAXPROCS updater (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:462 +0xce fp=0x320fded10788 sp=0x320fded10768 pc=0xe3894e
+runtime.goparkunlock(...)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:468
+runtime.updateMaxProcsGoroutine()
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:7095 +0xe7 fp=0x320fded107e0 sp=0x320fded10788 pc=0xe12287
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fded107e8 sp=0x320fded107e0 pc=0xe3ffe1
+created by runtime.defaultGOMAXPROCSUpdateEnable in goroutine 1
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:7083 +0x37
+
+goroutine 6 gp=0x320fded541e0 m=nil [finalizer wait]:
+runtime.gopark(0xe132d5?, 0x1c8?, 0x20?, 0xe3?, 0x320fded0e601?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:462 +0xce fp=0x320fded0e620 sp=0x320fded0e600 pc=0xe3894e
+runtime.runFinalizers()
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/mfinal.go:210 +0x107 fp=0x320fded0e7e0 sp=0x320fded0e620 pc=0xdddce7
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fded0e7e8 sp=0x320fded0e7e0 pc=0xe3ffe1
+created by runtime.createfing in goroutine 1
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/mfinal.go:172 +0x3d
+
+goroutine 7 gp=0x320fded543c0 m=nil [cleanup wait]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:462 +0xce fp=0x320fded10f68 sp=0x320fded10f48 pc=0xe3894e
+runtime.goparkunlock(...)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:468
+runtime.(*cleanupQueue).dequeue(0x440e1e0)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/mcleanup.go:522 +0xd4 fp=0x320fded10fa0 sp=0x320fded10f68 pc=0xddab34
+runtime.runCleanups()
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/mcleanup.go:718 +0x45 fp=0x320fded10fe0 sp=0x320fded10fa0 pc=0xddb1a5
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fded10fe8 sp=0x320fded10fe0 pc=0xe3ffe1
+created by runtime.(*cleanupQueue).createGs in goroutine 1
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/mcleanup.go:672 +0xa5
+
+goroutine 8 gp=0x320fded545a0 m=nil [chan receive]:
+runtime.gopark(0xe36465?, 0x20?, 0xf2?, 0xe3?, 0x320fded11748?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:462 +0xce fp=0x320fded116f8 sp=0x320fded116d8 pc=0xe3894e
+runtime.chanrecv(0x320fdee8f110, 0x320fded117b8, 0x1)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/chan.go:667 +0x4ae fp=0x320fded11770 sp=0x320fded116f8 pc=0xdcce4e
+runtime.chanrecv2(0x320fdeef54a0?, 0x319efa0?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/chan.go:514 +0x12 fp=0x320fded11798 sp=0x320fded11770 pc=0xdcc992
+github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.(*Frontend).startRequestProcessor(...)
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:572
+github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.NewFrontend.gowrap1()
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:199 +0x58 fp=0x320fded117e0 sp=0x320fded11798 pc=0x132ccd8
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fded117e8 sp=0x320fded117e0 pc=0xe3ffe1
+created by github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.NewFrontend in goroutine 1
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:199 +0x92c
+
+goroutine 9 gp=0x320fded54780 m=nil [chan receive]:
+runtime.gopark(0x320fdef80070?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:462 +0xce fp=0x320fded11ef8 sp=0x320fded11ed8 pc=0xe3894e
+runtime.chanrecv(0x320fdee8f030, 0x320fded11fb8, 0x1)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/chan.go:667 +0x4ae fp=0x320fded11f70 sp=0x320fded11ef8 pc=0xdcce4e
+runtime.chanrecv2(0x0?, 0x320fdefa6240?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/chan.go:514 +0x12 fp=0x320fded11f98 sp=0x320fded11f70 pc=0xdcc992
+github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.(*Frontend).startMessageProcessor(...)
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:231
+github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.NewFrontend.gowrap2()
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:202 +0x54 fp=0x320fded11fe0 sp=0x320fded11f98 pc=0x132cc54
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fded11fe8 sp=0x320fded11fe0 pc=0xe3ffe1
+created by github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.NewFrontend in goroutine 1
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:202 +0x5bb
+
+goroutine 10 gp=0x320fded54960 m=nil [runnable]:
+runtime.gopark(0x320fdef800e0?, 0x320fdef44160?, 0x5?, 0x0?, 0x311118b?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:462 +0xce fp=0x320fded9ce68 sp=0x320fded9ce48 pc=0xe3894e
+runtime.chanrecv(0x320fdee8f0a0, 0x320fded9cf80, 0x1)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/chan.go:667 +0x4ae fp=0x320fded9cee0 sp=0x320fded9ce68 pc=0xdcce4e
+runtime.chanrecv2(0x320fdeefaa80?, 0x320fdf086f50?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/chan.go:514 +0x12 fp=0x320fded9cf08 sp=0x320fded9cee0 pc=0xdcc992
+github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.(*Frontend).startBindingsMessageProcessor(0x320fdeefaa80)
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:237 +0x4b fp=0x320fded9cfc8 sp=0x320fded9cf08 pc=0x132cdcb
+github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.NewFrontend.gowrap3()
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:203 +0x17 fp=0x320fded9cfe0 sp=0x320fded9cfc8 pc=0x132cbd7
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fded9cfe8 sp=0x320fded9cfe0 pc=0xe3ffe1
+created by github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.NewFrontend in goroutine 1
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:203 +0x5fd
+
+goroutine 11 gp=0x320fded54b40 m=nil [chan receive]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:462 +0xce fp=0x320fded0ae98 sp=0x320fded0ae78 pc=0xe3894e
+runtime.chanrecv(0x320fdee8efc0, 0x320fded0af90, 0x1)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/chan.go:667 +0x4ae fp=0x320fded0af10 sp=0x320fded0ae98 pc=0xdcce4e
+runtime.chanrecv2(0x0?, 0x0?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/chan.go:514 +0x12 fp=0x320fded0af38 sp=0x320fded0af10 pc=0xdcc992
+github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.(*Frontend).startSecondInstanceProcessor(0x320fdeefaa80)
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:583 +0x4f fp=0x320fded0afc8 sp=0x320fded0af38 pc=0x132eccf
+github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.NewFrontend.gowrap4()
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:225 +0x17 fp=0x320fded0afe0 sp=0x320fded0afc8 pc=0x132cb97
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fded0afe8 sp=0x320fded0afe0 pc=0xe3ffe1
+created by github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.NewFrontend in goroutine 1
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:225 +0x7cb
+
+goroutine 12 gp=0x320fded54d20 m=nil [select, locked to thread]:
+runtime.gopark(0x320fded0b7a8?, 0x2?, 0x1?, 0x4d?, 0x320fded0b794?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:462 +0xce fp=0x320fded0b628 sp=0x320fded0b608 pc=0xe3894e
+runtime.selectgo(0x320fded0b7a8, 0x320fded0b790, 0x0?, 0x0, 0x0?, 0x1)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/select.go:351 +0xaa5 fp=0x320fded0b758 sp=0x320fded0b628 pc=0xe16da5
+runtime.ensureSigM.func1()
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/signal_unix.go:1091 +0x188 fp=0x320fded0b7e0 sp=0x320fded0b758 pc=0xe331c8
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fded0b7e8 sp=0x320fded0b7e0 pc=0xe3ffe1
+created by runtime.ensureSigM in goroutine 1
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/signal_unix.go:1074 +0xc5
+
+goroutine 18 gp=0x320fdef86000 m=3 mp=0x320fded13008 [syscall]:
+runtime.notetsleepg(0x4640c20, 0xffffffffffffffff)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/lock_futex.go:123 +0x29 fp=0x320fdef8c7a0 sp=0x320fdef8c778 pc=0xdd3429
+os/signal.signal_recv()
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/sigqueue.go:152 +0x98 fp=0x320fdef8c7c0 sp=0x320fdef8c7a0 pc=0xe3add8
+os/signal.loop()
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/os/signal/signal_unix.go:23 +0x13 fp=0x320fdef8c7e0 sp=0x320fdef8c7c0 pc=0x133b133
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fdef8c7e8 sp=0x320fdef8c7e0 pc=0xe3ffe1
+created by os/signal.Notify.func1.1 in goroutine 1
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/os/signal/signal.go:152 +0x1f
+
+goroutine 34 gp=0x320fdf000000 m=nil [chan receive]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/proc.go:462 +0xce fp=0x320fdef88708 sp=0x320fdef886e8 pc=0xe3894e
+runtime.chanrecv(0x320fded3c070, 0x0, 0x1)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/chan.go:667 +0x4ae fp=0x320fdef88780 sp=0x320fdef88708 pc=0xdcce4e
+runtime.chanrecv1(0x0?, 0x0?)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/chan.go:509 +0x12 fp=0x320fdef887a8 sp=0x320fdef88780 pc=0xdcc972
+github.com/wailsapp/wails/v2/internal/signal.Start.func1()
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/signal/signal.go:31 +0x25 fp=0x320fdef887e0 sp=0x320fdef887a8 pc=0x133b485
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fdef887e8 sp=0x320fdef887e0 pc=0xe3ffe1
+created by github.com/wailsapp/wails/v2/internal/signal.Start in goroutine 1
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/signal/signal.go:30 +0x86
+
+goroutine 35 gp=0x320fdf0001e0 m=8 mp=0x320fded80808 [syscall]:
+runtime.cgocall(0x13bfb50, 0x320fdef7f9e0)
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/cgocall.go:167 +0x4b fp=0x320fdef7f9b8 sp=0x320fdef7f980 pc=0xe358ab
+github.com/duckdb/duckdb-go-bindings/linux-amd64._Cfunc_duckdb_get_or_create_from_cache(0x7ff07c002a40, 0x7ff07c002fc0, 0x320fdec4cab0, 0x7ff07c000b70, 0x320fdec4caa8)
+	_cgo_gotypes.go:3444 +0x46 fp=0x320fdef7f9e0 sp=0x320fdef7f9b8 pc=0x10c62a6
+github.com/duckdb/duckdb-go-bindings/linux-amd64.GetOrCreateFromCache.func1(...)
+	/home/unidyne/go/pkg/mod/github.com/duckdb/duckdb-go-bindings/linux-amd64@v0.1.21/bindings.go:868
+github.com/duckdb/duckdb-go-bindings/linux-amd64.GetOrCreateFromCache({0x7ff07c002a40}, {0x320fdef44120?, 0x10?}, 0x320fdec4caa0, {0x7ff07c000b70}, 0x320fdec6fb40)
+	/home/unidyne/go/pkg/mod/github.com/duckdb/duckdb-go-bindings/linux-amd64@v0.1.21/bindings.go:868 +0x194 fp=0x320fdef7fa88 sp=0x320fdef7f9e0 pc=0x10c92b4
+github.com/duckdb/duckdb-go/v2.NewConnector({0x320fdef44120?, 0xb?}, 0x3189c78)
+	/home/unidyne/go/pkg/mod/github.com/duckdb/duckdb-go/v2@v2.4.3/duckdb.go:91 +0x254 fp=0x320fdef7fb48 sp=0x320fdef7fa88 pc=0x10eaeb4
+github.com/duckdb/duckdb-go/v2.Driver.OpenConnector({}, {0x320fdef44120?, 0x320fdef7fbb0?})
+	/home/unidyne/go/pkg/mod/github.com/duckdb/duckdb-go/v2@v2.4.3/duckdb.go:40 +0x1f fp=0x320fdef7fb70 sp=0x320fdef7fb48 pc=0x10eac1f
+github.com/duckdb/duckdb-go/v2.(*Driver).OpenConnector(0x43024f0?, {0x320fdef44120?, 0x3113220?})
+	<autogenerated>:1 +0x25 fp=0x320fdef7fb90 sp=0x320fdef7fb70 pc=0x1107505
+database/sql.Open({0x3113220, 0x6}, {0x320fdef44120, 0xb})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/database/sql/sql.go:872 +0x19d fp=0x320fdef7fc10 sp=0x320fdef7fb90 pc=0x10d6f9d
+simple-cot-chat/store.OpenAt({0x320fdef44120?, 0x320fdec6fb30?})
+	/mnt/data/GitHub/LocalChat/store/store.go:134 +0x3c fp=0x320fdef7fd20 sp=0x320fdef7fc10 pc=0x11a4b5c
+simple-cot-chat/store.Open()
+	/mnt/data/GitHub/LocalChat/store/store.go:124 +0x18 fp=0x320fdef7fd40 sp=0x320fdef7fd20 pc=0x11a4ad8
+main.(*App).startup(0x320fdee02630, {0x3197e00?, 0x320fdef04b10?})
+	/mnt/data/GitHub/LocalChat/app.go:187 +0x3fb fp=0x320fdef7ff98 sp=0x320fdef7fd40 pc=0x133defb
+main.(*App).startup-fm({0x3197e00?, 0x320fdef04b10?})
+	<autogenerated>:1 +0x2a fp=0x320fdef7ffc0 sp=0x320fdef7ff98 pc=0x134daaa
+github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.(*Frontend).Run.func1()
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:275 +0x31 fp=0x320fdef7ffe0 sp=0x320fdef7ffc0 pc=0x132d1f1
+runtime.goexit({})
+	/home/unidyne/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.0.linux-amd64/src/runtime/asm_amd64.s:1771 +0x1 fp=0x320fdef7ffe8 sp=0x320fdef7ffe0 pc=0xe3ffe1
+created by github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.(*Frontend).Run in goroutine 1
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:273 +0x7f
+
+goroutine 50 gp=0x320fdf0003c0 m=11 mp=0x320fdf100008 [running]:
+	goroutine running on other thread; stack unavailable
+created by github.com/wailsapp/wails/v2/internal/frontend/desktop/linux.(*Frontend).processMessage in goroutine 10
+	/home/unidyne/go/pkg/mod/github.com/wailsapp/wails/v2@v2.12.0/internal/frontend/desktop/linux/frontend.go:503 +0x3a5

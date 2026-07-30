@@ -12,6 +12,10 @@ import (
 var assets embed.FS
 
 func main() {
+	// Sampled before Wails touches anything, so this is the baseline: whatever the Go
+	// runtime installed. Enabled by LOCALCHAT_SIGPROBE=1 — see sigprobe_linux.go.
+	probeSignals("main() entry")
+
 	// Create an instance of the app structure
 	app := NewApp()
 
@@ -29,6 +33,8 @@ func main() {
 			app,
 		},
 	})
+
+	probeSignals("after wails.Run returned")
 
 	if err != nil {
 		println("Error:", err.Error())

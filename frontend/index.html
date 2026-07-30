@@ -24,6 +24,7 @@
     <div class="sidebar-tabs">
       <!--button class="tab-btn" onclick="switchTab('files',this)">Files</button-->
       <button class="tab-btn active" onclick="switchTab('sessions',this)">Sessions</button>
+      <button class="tab-btn" onclick="switchTab('memory',this)">Memory</button>
       <!--button class="tab-btn" onclick="switchTab('search',this)">Search</button-->
     </div>
 
@@ -48,6 +49,20 @@
         <div class="session-item"><div class="session-title">Dashboard wireframe ideas</div><div class="session-meta">3 hours ago &middot; 22 messages</div></div>
         <div class="session-item"><div class="session-title">Docker networking fix</div><div class="session-meta">Yesterday &middot; 5 messages</div></div>
       </div>
+    </div>
+
+    <div class="sidebar-content" id="tab-memory">
+      <div id="memoryStatus"></div>
+
+      <div class="mem-heading">Search</div>
+      <form id="memorySearchForm" autocomplete="off">
+        <input id="memorySearchInput" type="text" placeholder="Search your notes and past chats…">
+      </form>
+      <div id="memoryTuning"></div>
+      <div id="memoryResults"></div>
+
+      <div class="mem-heading">Indexed</div>
+      <div id="memorySources"></div>
     </div>
 
     <!--div class="sidebar-content" id="tab-search">
@@ -142,6 +157,7 @@
       <div id="planList"></div>
     </div>
 
+
   </aside>
 
 </div>
@@ -177,5 +193,6 @@ document.querySelector('.chat-textarea').addEventListener('input',function(){thi
 <script type="module" src="./src/app.js"></script>
 <script type="module" src="./src/artifacts.js"></script>
 <script type="module" src="./src/plan.js"></script>
+<script type="module" src="./src/memory.js"></script>
 </body>
 </html>

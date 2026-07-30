@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"regexp"
 	"strings"
@@ -26,7 +27,29 @@ func (a *App) GetArtifactContent(id string) (store.Artifact, error) {
 // This is the manual/dev-facing counterpart to the create-artifact tool the
 // model will use once tool-calling is wired in.
 func (a *App) CreateArtifactManual(title, content, contentType string) (string, error) {
-	return a.sess.CreateArtifact(a.sess.CurrentSession(), title, content, contentType)
+	id, err := a.sess.CreateArtifact(a.sess.CurrentSession(), title, content, contentType)
+	if err != nil {
+		return "", err
+	}
+	a.enqueueArtifactMemory(id)
+	return id, nil
+}
+
+// enqueueArtifactMemory queues an artifact for ingestion into memory.
+//
+// Non-blocking and failure-tolerant for the same reason as enqueueTurnMemory: the
+// artifact is already saved, and memory not indexing it is a degraded search, not a
+// failed operation. Both creation paths call this so an artifact the user made by
+// hand is as searchable as one the model produced.
+func (a *App) enqueueArtifactMemory(id string) {
+	if a.mem == nil || id == "" {
+		return
+	}
+	if _, err := a.mem.EnqueueArtifactIngest(func() (store.Artifact, error) {
+		return a.sess.GetArtifact(id)
+	}, id); err != nil {
+		slog.Warn("could not queue artifact for memory", "artifact", id, "error", err)
+	}
 }
 
 // artifactExtByType maps an artifact's content_type to a file extension for

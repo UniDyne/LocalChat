@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,10 +14,10 @@ import (
 
 // Session is a stored session record.
 type Session struct {
-	ID             string `json:"id"`
-	Title          string `json:"title"`
-	CreatedAt      string `json:"createdAt"`
-	MessageCount int  `json:"messageCount"`
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	CreatedAt    string `json:"createdAt"`
+	MessageCount int    `json:"messageCount"`
 }
 
 // StoredMessage is a message retrieved from the database.
@@ -37,14 +38,14 @@ type StoredMessage struct {
 // Role is one of "user", "assistant", "cot" (a hidden chain-of-thought
 // evaluation pass), or "tool" (a single tool call/result).
 type NewMessage struct {
-	Role        string
-	Content     string
-	Model       string
-	Mode        string
-	Pinned      bool
-	ToolName    string
-	ToolArgs    string
-	ToolResult  string
+	Role       string
+	Content    string
+	Model      string
+	Mode       string
+	Pinned     bool
+	ToolName   string
+	ToolArgs   string
+	ToolResult string
 }
 
 // PlanStep is one step of a session's plan (see the manage_plan tool).
@@ -77,8 +78,30 @@ type Artifact struct {
 // Store wraps DuckDB-backed session storage and provides thread-safe access.
 type Store struct {
 	db *sql.DB
+	// mu guards currentSession, the only in-memory state here.
 	mu sync.Mutex
+	// writeMu serializes memory-table writes.
+	//
+	// It is not belt-and-braces. DuckDB detects write-write conflicts between
+	// concurrent transactions and *fails* the loser, and two memory writers are
+	// routine: the ingestion queue's worker writes while the chat goroutine searches,
+	// and a search recomputes and stores BM25 corpus statistics. Without this, an
+	// ingest racing a search raises `Duplicate key "key: stats_dirty" violates
+	// primary key constraint` even though the statement is an upsert — observed, not
+	// theorized (see TestConcurrentMemoryWrites).
+	//
+	// Reads deliberately do not take it: DuckDB's MVCC serves them from a snapshot,
+	// and holding a lock across search would put ingestion in the path of every
+	// query, which is the thing the queue exists to prevent.
+	writeMu        sync.Mutex
 	currentSession string
+}
+
+// lockWrites serializes a memory-table write. Callers must not hold it while
+// calling another write method — no method here nests.
+func (s *Store) lockWrites() func() {
+	s.writeMu.Lock()
+	return s.writeMu.Unlock
 }
 
 // Path returns the path to the DuckDB file next to config.json / executable.
@@ -95,17 +118,110 @@ func Path() string {
 	return "./sessions.db"
 }
 
-// Open opens (or creates) the DuckDB database and ensures tables exist.
-// Returns a ready Store with an active session selected or auto-created.
-func Open() (*Store, error) {
-	db, err := sql.Open("duckdb", Path())
+// Open opens (or creates) the DuckDB database at the default location and
+// ensures tables exist. Returns a ready Store with an active session selected or
+// auto-created.
+func Open() (*Store, error) { return OpenAt(Path()) }
+
+// DB exposes the underlying handle. Intended for tests and for ad-hoc queries in
+// the memory layer that do not warrant a dedicated method; ordinary callers
+// should use the typed methods so access stays serialized and consistent.
+func (s *Store) DB() *sql.DB { return s.db }
+
+// OpenAt opens (or creates) the database at an explicit path. Open uses this with
+// the default location; tests use it directly to work against a temporary file.
+func OpenAt(path string) (*Store, error) {
+	db, err := sql.Open("duckdb", path)
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
 
+	// Bound the connection pool.
+	//
+	// `database/sql` defaults to *unlimited* open connections, opening a new one per
+	// concurrent query. For a client/server database that is reasonable; for an embedded
+	// single-writer engine reached through cgo it is not, because every in-flight query
+	// pins an OS thread inside native code for its duration. A burst of concurrent
+	// queries therefore turns into a burst of threads sitting in DuckDB, which is both
+	// wasteful and a much worse failure mode than waiting.
+	//
+	// Four is enough for the access pattern: one background worker doing bulk writes
+	// (serialized by writeMu anyway) and a handful of short UI reads. Anything beyond
+	// that queues in Go, where it is visible and cheap, rather than in cgo.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
 	s := &Store{db: db}
 
-	createSQL := `
+	if err := applySchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := s.SetMeta(MetaSchemaVersion, MemorySchemaVersion); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	// One-time (idempotent) repair of artifacts left behind by the pre-cascade
+	// DeleteSession — see cleanupOrphanedArtifacts. Logged, not silent.
+	if n, err := s.cleanupOrphanedArtifacts(); err != nil {
+		db.Close()
+		return nil, err
+	} else if n > 0 {
+		slog.Info("removed orphaned artifacts whose session no longer exists", "count", n)
+	}
+
+	// Pick an existing session or create one.
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&count)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("count sessions: %w", err)
+	}
+
+	if count == 0 {
+		id := s.createSessionInternal("", true)
+		s.currentSession = id
+	} else {
+		err = db.QueryRow(
+			"SELECT id FROM sessions ORDER BY created_at DESC LIMIT 1",
+		).Scan(&s.currentSession)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("select latest session: %w", err)
+		}
+	}
+
+	return s, nil
+}
+
+// applySchema creates and migrates every table, idempotently.
+//
+// One function rather than three calls at the open site so that the sequence cannot
+// drift: tests build a Store directly and previously reproduced this DDL by hand,
+// which silently missed the Phase 7 migration and failed with a binder error on a
+// column that existed everywhere except in tests.
+func applySchema(db *sql.DB) error {
+	if _, err := db.Exec(schemaSQL); err != nil {
+		return fmt.Errorf("create tables: %w", err)
+	}
+	if _, err := db.Exec(memorySchemaSQL); err != nil {
+		return fmt.Errorf("create memory tables: %w", err)
+	}
+	// Columns added after the first release. Idempotent, so it runs unconditionally
+	// rather than being gated on the recorded schema version — see
+	// memoryMigrationSQL.
+	if _, err := db.Exec(memoryMigrationSQL); err != nil {
+		return fmt.Errorf("migrate memory tables: %w", err)
+	}
+	return nil
+}
+
+// schemaSQL is the full schema, applied idempotently on every Open. Kept as a
+// package-level constant so tests can build a store against a temporary path
+// without duplicating the DDL.
+const schemaSQL = `
 CREATE TABLE IF NOT EXISTS sessions (
 	id        TEXT PRIMARY KEY,
 	title     TEXT NOT NULL DEFAULT '',
@@ -141,35 +257,6 @@ CREATE TABLE IF NOT EXISTS plan_steps (
 	updated_at TIMESTAMP NOT NULL,
 	PRIMARY KEY (session_id, seq)
 );`
-
-	if _, err := db.Exec(createSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create tables: %w", err)
-	}
-
-	// Pick an existing session or create one.
-	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&count)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("count sessions: %w", err)
-	}
-
-	if count == 0 {
-		id := s.createSessionInternal("", true)
-		s.currentSession = id
-	} else {
-		err = db.QueryRow(
-			"SELECT id FROM sessions ORDER BY created_at DESC LIMIT 1",
-		).Scan(&s.currentSession)
-		if err != nil {
-			db.Close()
-			return nil, fmt.Errorf("select latest session: %w", err)
-		}
-	}
-
-	return s, nil
-}
 
 // Close shuts down the underlying database connection.
 func (s *Store) Close() error {
@@ -210,8 +297,21 @@ func (s *Store) SwitchSession(id string) error {
 	return nil
 }
 
-// DeleteSession removes a session and its messages. If it was the current
-// session, create a fresh replacement so there's always an active session.
+// DeleteSession removes a session, its messages, plan, artifacts, and every
+// piece of memory derived from any of them.
+//
+// Two behaviors worth calling out. First, artifacts now cascade: previously they
+// carried a session_id but were never deleted, so they survived as orphans —
+// unintentional, and fixed here (see cleanupOrphanedArtifacts for the one-time
+// repair of rows already orphaned). Second, memory derived from this session
+// dies with it, while directory-sourced memory is untouched because it has no
+// session_id — that asymmetry is deliberate.
+//
+// Ordering matters: memory rows are removed before the artifacts they were
+// derived from, so the cascade can still resolve source_ref -> artifact.
+//
+// If the deleted session was current, a fresh replacement is created so there is
+// always an active session.
 func (s *Store) DeleteSession(id string) error {
 	var exists bool
 	err := s.db.QueryRow(
@@ -231,6 +331,13 @@ func (s *Store) DeleteSession(id string) error {
 	wasCurrent := s.currentSession == id
 	s.mu.Unlock()
 
+	// Memory first, while the artifacts it was derived from still exist.
+	if err := deleteMemoryForSessionTx(tx, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM artifacts WHERE session_id = ?", id); err != nil {
+		return fmt.Errorf("delete artifacts: %w", err)
+	}
 	if _, err := tx.Exec("DELETE FROM messages WHERE session_id = ?", id); err != nil {
 		return fmt.Errorf("delete messages: %w", err)
 	}
@@ -239,6 +346,12 @@ func (s *Store) DeleteSession(id string) error {
 	}
 	if _, err := tx.Exec("DELETE FROM sessions WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete session: %w", err)
+	}
+	// The corpus shrank, so BM25's df/N/avgdl now describe a corpus that no
+	// longer exists. Recompute lazily on next search rather than trying to
+	// decrement correctly here.
+	if err := markStatsDirtyTx(tx); err != nil {
+		return err
 	}
 
 	if wasCurrent {
