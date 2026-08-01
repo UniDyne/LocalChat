@@ -37,11 +37,15 @@ export function GetModel():Promise<string>;
 
 export function GetPlan(arg1:string):Promise<Array<store.PlanStep>>;
 
+export function GetSessionToolStates(arg1:string):Promise<Array<main.ToolState>>;
+
 export function GetSessions():Promise<Array<store.Session>>;
 
 export function GetSkillBody(arg1:string):Promise<string>;
 
 export function GetWorkDir():Promise<string>;
+
+export function ImportArtifact(arg1:string):Promise<store.ArtifactMeta>;
 
 export function IndexExistingHistory():Promise<boolean>;
 
@@ -86,6 +90,8 @@ export function SetCotMode(arg1:string):Promise<void>;
 export function SetMessagePinned(arg1:string,arg2:number,arg3:boolean):Promise<void>;
 
 export function SetModel(arg1:string):Promise<void>;
+
+export function SetSessionToolEnabled(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function SwitchSession(arg1:string):Promise<void>;
 

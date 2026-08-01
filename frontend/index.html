@@ -132,6 +132,8 @@
         <span class="dd-label">Dir</span>
         <button class="dd-btn dir-btn" id="dirBtn" title="Select a directory to enable file tools">None</button>
         <button class="dir-clear-btn" id="dirClearBtn" title="Deselect directory (disables file tools)" style="display:none">&times;</button>
+        <span style="width:8px;display:inline-block"></span>
+        <button class="dd-btn" id="toolsBtn" title="Toggle tools for this session">Tools</button>
       </div>
       <div class="input-row">
         <textarea class="chat-textarea" placeholder="Type a message... (Shift+Enter for new line)" rows="1"></textarea>
@@ -150,6 +152,9 @@
     </div>
 
     <div class="sidebar-content visible" id="tab-artifacts">
+      <div class="artifacts-toolbar">
+        <button class="artifact-import-btn" id="artifactImportBtn" title="Import a file as an artifact">Import</button>
+      </div>
       <div id="artifactList"></div>
     </div>
 
@@ -194,5 +199,6 @@ document.querySelector('.chat-textarea').addEventListener('input',function(){thi
 <script type="module" src="./src/artifacts.js"></script>
 <script type="module" src="./src/plan.js"></script>
 <script type="module" src="./src/memory.js"></script>
+<script type="module" src="./src/tools.js"></script>
 </body>
 </html>

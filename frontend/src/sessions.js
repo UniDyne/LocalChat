@@ -102,6 +102,7 @@ async function loadSessionMessages(sessionId) {
                 seq: m.seq, role: m.role, content: escapeHtml(m.content),
                 model: m.model, mode: m.mode, pinned: m.pinned,
                 toolName: m.toolName, toolArgs: m.toolArgs, toolResult: m.toolResult,
+                time: m.time,
             });
         }
     } catch (err) { console.error('loadSessionMessages', err); }

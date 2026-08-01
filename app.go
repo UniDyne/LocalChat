@@ -39,6 +39,9 @@ type config struct {
 	// on purpose: extraction is a far easier task than chat, so it should run on a
 	// smaller model. Empty leaves the pass disabled, and memory works without it.
 	ExtractModel string `json:"extract_model"`
+	// DBPath overrides the default sessions.db location. Empty means use the
+	// default (next to the executable, or in the working directory).
+	DBPath string `json:"db_path"`
 }
 
 func loadConfig() *config {
@@ -49,7 +52,11 @@ func loadConfig() *config {
 
 	execPath, err := os.Executable()
 	if err == nil {
-		for _, dir := range []string{filepath.Dir(execPath), "."} {
+		// confDir() is searched first so config.json can live alongside
+		// SYSTEM.md and the other runtime files in conf/. The executable
+		// directory and working directory remain as fallbacks so existing
+		// installations keep working without moving their config.json.
+		for _, dir := range []string{confDir(), filepath.Dir(execPath), "."} {
 			path := filepath.Join(dir, "config.json")
 			data, readErr := os.ReadFile(path)
 			if readErr != nil {
@@ -127,12 +134,13 @@ func (a *App) shortOllamaCall() (context.Context, context.CancelFunc) {
 
 // App holds the Ollama client, active configuration, and DuckDB session store.
 type App struct {
-	ctx   context.Context
-	cli   *api.Client
-	addr  string
-	model string
-	mode  string
-	sess  *store.Store
+	ctx    context.Context
+	cli    *api.Client
+	addr   string
+	model  string
+	mode   string
+	dbPath string // empty → use store.Open default
+	sess   *store.Store
 
 	// workDirMu guards workDir, which is read from the tool-calling loop
 	// (toolRegistry, on every chat turn) and written from the frontend's
@@ -166,7 +174,7 @@ func NewApp() *App {
 	cfg := loadConfig()
 	return &App{
 		addr: cfg.OllamaEndpoint, model: cfg.Model, mode: CotModeNone,
-		extractModel: cfg.ExtractModel,
+		extractModel: cfg.ExtractModel, dbPath: cfg.DBPath,
 	}
 }
 
@@ -194,7 +202,12 @@ func (a *App) startup(ctx context.Context) {
 	slog.Info("Ollama client ready", "addr", addr)
 
 	probeSignals("startup: before store.Open")
-	ds, err := store.Open()
+	var ds *store.Store
+	if a.dbPath != "" {
+		ds, err = store.OpenAt(a.dbPath)
+	} else {
+		ds, err = store.Open()
+	}
 	if err != nil {
 		slog.Error("db init failed", "error", err)
 		a.setMemInitErr(fmt.Errorf("database could not be opened: %w", err))
@@ -1459,4 +1472,36 @@ func (a *App) SaveMessage(sessionID, role, content string) error {
 // database either way — only its inclusion in context changes.
 func (a *App) SetMessagePinned(sessionID string, seq int, pinned bool) error {
 	return a.sess.SetMessagePinned(sessionID, seq, pinned)
+}
+
+// ToolState reports one tool's name and enabled/disabled state for a session.
+type ToolState struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+// GetSessionToolStates returns the enabled/disabled state of every currently
+// available tool for the given session. The set reflects runtime availability
+// (memory corpus populated, directory selected) as well as per-session
+// preferences.
+func (a *App) GetSessionToolStates(sessionID string) ([]ToolState, error) {
+	all := a.availableTools()
+	disabled, err := a.sess.GetDisabledTools(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("get disabled tools: %w", err)
+	}
+	disabledSet := make(map[string]bool, len(disabled))
+	for _, n := range disabled {
+		disabledSet[n] = true
+	}
+	states := make([]ToolState, len(all))
+	for i, t := range all {
+		states[i] = ToolState{Name: t.Name, Enabled: !disabledSet[t.Name]}
+	}
+	return states, nil
+}
+
+// SetSessionToolEnabled enables or disables a specific tool for a session.
+func (a *App) SetSessionToolEnabled(sessionID, toolName string, enabled bool) error {
+	return a.sess.SetToolEnabled(sessionID, toolName, enabled)
 }

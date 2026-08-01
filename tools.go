@@ -17,11 +17,10 @@ type ToolDef struct {
 	Handler     func(a *App, args map[string]any) (string, error)
 }
 
-// toolRegistry returns every tool available to the model. The file tools
-// (list/read/write/update) are only included once the user has selected a
-// directory in the UI — see App.hasWorkDir — so the model can't see or call
-// them at all while they're disabled, rather than seeing them fail.
-func (a *App) toolRegistry() []ToolDef {
+// availableTools builds the full list of tools based on current runtime state
+// (memory corpus, selected directory) without applying per-session disabled
+// filtering. Shared by toolRegistry and GetSessionToolStates.
+func (a *App) availableTools() []ToolDef {
 	tools := []ToolDef{
 		a.searchSkillsTool(),
 		a.loadSkillTool(),
@@ -32,9 +31,6 @@ func (a *App) toolRegistry() []ToolDef {
 		a.getArtifactTool(),
 		a.managePlanTool(),
 	}
-	// search_memory is offered only once memory holds something. Same reasoning as
-	// hasWorkDir gating the file tools: advertising a tool that can only return
-	// nothing wastes a turn and teaches the model the tool is useless.
 	if a.hasMemory() {
 		tools = append(tools, a.searchMemoryTool())
 	}
@@ -42,6 +38,35 @@ func (a *App) toolRegistry() []ToolDef {
 		tools = append(tools, a.listFilesTool(), a.readFileTool(), a.writeFileTool(), a.updateFileTool())
 	}
 	return tools
+}
+
+// toolRegistry returns every tool available to the model for the current
+// session. The file tools are only included when a directory is selected (see
+// hasWorkDir); search_memory only when the corpus is non-empty (see
+// hasMemory). On top of those runtime gates, any tool the user has explicitly
+// disabled for this session is also excluded.
+func (a *App) toolRegistry() []ToolDef {
+	all := a.availableTools()
+	sessionID := a.sess.CurrentSession()
+	disabled, err := a.sess.GetDisabledTools(sessionID)
+	if err != nil {
+		slog.Warn("could not read disabled tools, serving full set", "session", sessionID, "error", err)
+		return all
+	}
+	if len(disabled) == 0 {
+		return all
+	}
+	disabledSet := make(map[string]bool, len(disabled))
+	for _, n := range disabled {
+		disabledSet[n] = true
+	}
+	result := make([]ToolDef, 0, len(all))
+	for _, t := range all {
+		if !disabledSet[t.Name] {
+			result = append(result, t)
+		}
+	}
+	return result
 }
 
 func (a *App) findTool(name string) (ToolDef, bool) {

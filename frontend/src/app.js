@@ -6,7 +6,7 @@ import { selectDirectory, clearDirectory, getWorkDir } from './api';
 import { renderSessionList, getActiveSessionId } from './sessions'
 import { renderArtifactList } from './artifacts'
 import { renderPlanList } from './plan'
-import { escapeHtml, renderMarkdown, renderHighlighted } from './content'
+import { escapeHtml, renderMarkdown, renderHighlighted, initMermaidIn } from './content'
 import { EventsOn } from '../wailsjs/runtime/runtime'
 
 
@@ -59,9 +59,9 @@ const planStopBtn    = document.getElementById('planStopBtn');
 const planResumeBtn  = document.getElementById('planResumeBtn');
 
 // --- Helpers ---
-function getTimestamp() {
-    const d = new Date();
-    return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+function formatMessageTime(time) {
+    const d = time ? new Date(time) : new Date();
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 export function resetMessages() {
@@ -191,7 +191,7 @@ export function addMessage(entry) {
             <div class="msg-body">
                 <div class="msg-header">
                     <span>${headerLabel}</span>
-                    <span class="msg-time">${getTimestamp()}</span>
+                    <span class="msg-time">${formatMessageTime(rec.time)}</span>
                     ${metaBits ? `<span class="msg-model-badge">${escapeHtml(metaBits)}</span>` : ''}
                     ${elapsedBadge}
                 </div>
@@ -201,6 +201,7 @@ export function addMessage(entry) {
     }
 
     chatLog.appendChild(div);
+    initMermaidIn(div);
     chatLog.scrollTop = chatLog.scrollHeight;
     return rec;
 }
@@ -286,7 +287,8 @@ function setStatus(text, state) {
         statusDot.className = `status-dot ${state}`;
     }
     if (statusText) {
-        statusText.innerHTML = `<span class="status-dot ${state}"></span>${text} <span class="status-elapsed">0ms</span>`;
+        const elapsed = state !== 'ready' ? ' <span class="status-elapsed">0ms</span>' : '';
+        statusText.innerHTML = `<span class="status-dot ${state}"></span>${text}${elapsed}`;
     }
 }
 

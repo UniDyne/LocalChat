@@ -1,5 +1,14 @@
 import { marked } from 'marked';
 import mathMarked from "@webc.site/math-marked";
+import mermaid from 'mermaid';
+
+mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+
+export function initMermaidIn(el) {
+    const nodes = [...el.querySelectorAll('.mermaid')];
+    if (!nodes.length) return;
+    mermaid.run({ nodes }).catch(err => console.warn('mermaid render failed', err));
+}
 
 import hljs from 'highlight.js/lib/core';
 import 'highlight.js/styles/atom-one-dark.css';
@@ -93,6 +102,17 @@ export function renderMarkdown(text) {
 
 
         const rawText = codeEl.textContent;
+
+        // Mermaid diagrams: replace the code block with a plain div that
+        // mermaid.run() can find and render after the element is in the DOM.
+        if (lang === 'mermaid') {
+            const diagram = document.createElement('div');
+            diagram.className = 'mermaid';
+            diagram.textContent = rawText;
+            pre.parentNode?.replaceChild(diagram, pre);
+            continue;
+        }
+
         try {
             if(lang) {
                 const result = hljs.highlight(rawText, {language: lang});

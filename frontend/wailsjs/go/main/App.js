@@ -66,6 +66,10 @@ export function GetPlan(arg1) {
   return window['go']['main']['App']['GetPlan'](arg1);
 }
 
+export function GetSessionToolStates(arg1) {
+  return window['go']['main']['App']['GetSessionToolStates'](arg1);
+}
+
 export function GetSessions() {
   return window['go']['main']['App']['GetSessions']();
 }
@@ -76,6 +80,10 @@ export function GetSkillBody(arg1) {
 
 export function GetWorkDir() {
   return window['go']['main']['App']['GetWorkDir']();
+}
+
+export function ImportArtifact(arg1) {
+  return window['go']['main']['App']['ImportArtifact'](arg1);
 }
 
 export function IndexExistingHistory() {
@@ -164,6 +172,10 @@ export function SetMessagePinned(arg1, arg2, arg3) {
 
 export function SetModel(arg1) {
   return window['go']['main']['App']['SetModel'](arg1);
+}
+
+export function SetSessionToolEnabled(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetSessionToolEnabled'](arg1, arg2, arg3);
 }
 
 export function SwitchSession(arg1) {

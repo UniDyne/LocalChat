@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -18,6 +19,15 @@ func main() {
 
 	// Create an instance of the app structure
 	app := NewApp()
+
+	// Allow the database path to be overridden on the command line with --db
+	// <path>. Checked before wails.Run so it is available to startup().
+	for i, arg := range os.Args[1:] {
+		if (arg == "--db" || arg == "-db") && i+1 < len(os.Args[1:]) {
+			app.dbPath = os.Args[i+2]
+			break
+		}
+	}
 
 	// Create application with options
 	err := wails.Run(&options.App{

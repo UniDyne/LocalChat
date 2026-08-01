@@ -1,4 +1,4 @@
-import { getArtifacts, getArtifactContent, getCurrentSession, saveArtifact } from './api';
+import { getArtifacts, getArtifactContent, getCurrentSession, saveArtifact, importArtifact } from './api';
 import { escapeHtml, renderMarkdown, renderHighlighted } from './content';
 
 // --- Artifact list (right sidebar) ---
@@ -90,5 +90,15 @@ async function downloadArtifact(id) {
         console.error('saveArtifact', err);
     }
 }
+
+document.getElementById('artifactImportBtn')?.addEventListener('click', async () => {
+    try {
+        const sessionId = await getCurrentSession();
+        const meta = await importArtifact(sessionId);
+        if (meta?.id) await renderArtifactList();
+    } catch (err) {
+        console.error('importArtifact', err);
+    }
+});
 
 renderArtifactList();

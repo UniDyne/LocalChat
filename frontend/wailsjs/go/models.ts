@@ -148,6 +148,20 @@ export namespace main {
 	        this.sourceTypes = source["sourceTypes"];
 	    }
 	}
+	export class ToolState {
+	    name: string;
+	    enabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ToolState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.enabled = source["enabled"];
+	    }
+	}
 
 }
 

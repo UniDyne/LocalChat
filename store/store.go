@@ -256,6 +256,11 @@ CREATE TABLE IF NOT EXISTS plan_steps (
 	status     TEXT NOT NULL DEFAULT 'pending',
 	updated_at TIMESTAMP NOT NULL,
 	PRIMARY KEY (session_id, seq)
+);
+CREATE TABLE IF NOT EXISTS session_tool_disabled (
+	session_id TEXT NOT NULL,
+	tool_name  TEXT NOT NULL,
+	PRIMARY KEY (session_id, tool_name)
 );`
 
 // Close shuts down the underlying database connection.
@@ -343,6 +348,9 @@ func (s *Store) DeleteSession(id string) error {
 	}
 	if _, err := tx.Exec("DELETE FROM plan_steps WHERE session_id = ?", id); err != nil {
 		return fmt.Errorf("delete plan: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM session_tool_disabled WHERE session_id = ?", id); err != nil {
+		return fmt.Errorf("delete tool settings: %w", err)
 	}
 	if _, err := tx.Exec("DELETE FROM sessions WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete session: %w", err)
@@ -590,6 +598,46 @@ func (s *Store) GetPlan(sessionID string) ([]PlanStep, error) {
 		steps = append(steps, p)
 	}
 	return steps, nil
+}
+
+// GetDisabledTools returns the names of tools the user has explicitly disabled
+// for the given session. An absent row means the tool is enabled (default).
+func (s *Store) GetDisabledTools(sessionID string) ([]string, error) {
+	rows, err := s.db.Query(
+		"SELECT tool_name FROM session_tool_disabled WHERE session_id = ? ORDER BY tool_name",
+		sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get disabled tools: %w", err)
+	}
+	defer rows.Close()
+	var tools []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan tool name: %w", err)
+		}
+		tools = append(tools, name)
+	}
+	return tools, rows.Err()
+}
+
+// SetToolEnabled enables or disables a tool for a session. A disabled tool
+// has a row in session_tool_disabled; enabling it removes that row.
+func (s *Store) SetToolEnabled(sessionID, toolName string, enabled bool) error {
+	defer s.lockWrites()()
+	if enabled {
+		_, err := s.db.Exec(
+			"DELETE FROM session_tool_disabled WHERE session_id = ? AND tool_name = ?",
+			sessionID, toolName,
+		)
+		return err
+	}
+	_, err := s.db.Exec(
+		"INSERT INTO session_tool_disabled (session_id, tool_name) VALUES (?, ?) ON CONFLICT DO NOTHING",
+		sessionID, toolName,
+	)
+	return err
 }
 
 // createSessionInternal inserts a row into the sessions table and returns its ID.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -52,6 +53,15 @@ func (a *App) enqueueArtifactMemory(id string) {
 	}
 }
 
+// contentTypeByExt maps a file extension to an artifact content_type.
+// Used by ImportArtifact to guess the type from the chosen file's name.
+var contentTypeByExt = map[string]string{
+	"md": "markdown", "markdown": "markdown",
+	"py": "python", "go": "go", "js": "javascript", "ts": "typescript",
+	"json": "json", "yaml": "yaml", "yml": "yaml",
+	"html": "html", "htm": "html", "css": "css", "sql": "sql", "txt": "text",
+}
+
 // artifactExtByType maps an artifact's content_type to a file extension for
 // the save dialog's suggested filename. Mirrors EXT_BY_TYPE in artifacts.js.
 var artifactExtByType = map[string]string{
@@ -77,6 +87,46 @@ func sanitizeArtifactFilename(title string) string {
 		return "artifact"
 	}
 	return title
+}
+
+// ImportArtifact opens a native file picker and imports the chosen file as a
+// new artifact in the given session. The content type is inferred from the
+// file extension; unknown extensions default to "text". Returns the new
+// artifact's metadata, or a zero ArtifactMeta if the user cancelled.
+func (a *App) ImportArtifact(sessionID string) (store.ArtifactMeta, error) {
+	path, err := wailsruntime.OpenFileDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Import file as artifact",
+	})
+	if err != nil {
+		return store.ArtifactMeta{}, fmt.Errorf("open file dialog: %w", err)
+	}
+	if path == "" {
+		return store.ArtifactMeta{}, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return store.ArtifactMeta{}, fmt.Errorf("read file: %w", err)
+	}
+
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
+	contentType := contentTypeByExt[ext]
+	if contentType == "" {
+		contentType = "text"
+	}
+
+	id, err := a.sess.CreateArtifact(sessionID, filepath.Base(path), string(data), contentType)
+	if err != nil {
+		return store.ArtifactMeta{}, fmt.Errorf("create artifact: %w", err)
+	}
+	a.enqueueArtifactMemory(id)
+	wailsruntime.EventsEmit(a.ctx, "artifact:created", map[string]any{"sessionId": sessionID})
+
+	art, err := a.sess.GetArtifact(id)
+	if err != nil {
+		return store.ArtifactMeta{}, nil
+	}
+	return store.ArtifactMeta{ID: art.ID, Title: art.Title, ContentType: art.ContentType, CreatedAt: art.CreatedAt}, nil
 }
 
 // SaveArtifact opens a native save dialog — defaulting to the artifact's own

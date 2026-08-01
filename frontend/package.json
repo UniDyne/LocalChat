@@ -13,6 +13,7 @@
   "dependencies": {
     "@webc.site/math-marked": "^0.1.1",
     "highlight.js": "^11.11.1",
-    "marked": "^18.0.5"
+    "marked": "^18.0.5",
+    "mermaid": "^11.16.0"
   }
 }

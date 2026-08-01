@@ -1,7 +1,8 @@
 import { ListModels, SendChat, GetModel, SetModel } from '../wailsjs/go/main/App';
 import { ListCotModes, GetCotMode, SetCotMode } from '../wailsjs/go/main/App';
 import { CreateSession, GetCurrentSession, GetSessions, SwitchSession, DeleteSession, RenameSession, GetMessages } from '../wailsjs/go/main/App';
-import { GetArtifacts, GetArtifactContent, CreateArtifactManual, SaveArtifact } from '../wailsjs/go/main/App';
+import { GetArtifacts, GetArtifactContent, CreateArtifactManual, SaveArtifact, ImportArtifact } from '../wailsjs/go/main/App';
+import { GetSessionToolStates, SetSessionToolEnabled } from '../wailsjs/go/main/App';
 import { SetMessagePinned } from '../wailsjs/go/main/App';
 import { SelectDirectory, ClearDirectory, GetWorkDir } from '../wailsjs/go/main/App';
 import { GetPlan } from '../wailsjs/go/main/App';
@@ -225,6 +226,36 @@ export async function createArtifactManual(title, content, contentType) {
  */
 export async function saveArtifact(id) {
     return await SaveArtifact(id);
+}
+
+/**
+ * Open a native file picker and import the chosen file as a new artifact in
+ * the given session. Content type is inferred from the file extension.
+ * @param {string} sessionId
+ * @returns {{id:string,title:string,contentType:string,createdAt:string}|null}
+ *   The new artifact's metadata, or null if the user cancelled.
+ */
+export async function importArtifact(sessionId) {
+    return await ImportArtifact(sessionId);
+}
+
+/**
+ * Return the enabled/disabled state of every available tool for a session.
+ * @param {string} sessionId
+ * @returns {{name:string,enabled:boolean}[]}
+ */
+export async function getSessionToolStates(sessionId) {
+    return await GetSessionToolStates(sessionId);
+}
+
+/**
+ * Enable or disable a specific tool for a session.
+ * @param {string} sessionId
+ * @param {string} toolName
+ * @param {boolean} enabled
+ */
+export async function setSessionToolEnabled(sessionId, toolName, enabled) {
+    await SetSessionToolEnabled(sessionId, toolName, enabled);
 }
 
 // --- Memory ---
