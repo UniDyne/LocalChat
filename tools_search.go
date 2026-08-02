@@ -288,6 +288,28 @@ func fetchPage(rawURL string, maxChars int) (FetchResult, error) {
 		content = extractVisibleText(bodyBytes)
 	}
 
+	// Tier 2: DataTables AJAX — find any DataTable() calls whose table body
+	// is empty in the static HTML and fetch the AJAX endpoint to fill it in.
+	if dtMD := dataTablesAjaxMD(bodyBytes, parsed); dtMD != "" {
+		if content == "" {
+			content = dtMD
+		} else {
+			content += "\n\n" + dtMD
+		}
+	}
+
+	// Tier 1: Inline JSON state — when Readability found thin content,
+	// scan for __NEXT_DATA__, ld+json, and window state blobs.
+	if wordCount(content) < 150 {
+		if stateMD := inlineStateMD(bodyBytes); stateMD != "" {
+			if content == "" {
+				content = stateMD
+			} else {
+				content += "\n\n" + stateMD
+			}
+		}
+	}
+
 	if maxChars > 0 && len([]rune(content)) > maxChars {
 		runes := []rune(content)
 		content = string(runes[:maxChars]) + "\n\n[… truncated]"
