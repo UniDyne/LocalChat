@@ -188,6 +188,50 @@ func NewApp() *App {
 	}
 }
 
+// preopenStore opens DuckDB before the Wails window starts. Call this from
+// main() so DuckDB's initialization (schema setup, WAL replay) completes before
+// GTK/WebKit creates its own OS threads — avoiding the thread contention that
+// can hang the UI when DuckDB is doing heavy cgo work while GTK is starting.
+//
+// If the open fails and a WAL file exists (left by a prior crash), the WAL is
+// renamed to a timestamped backup and the open is retried, preserving its
+// contents rather than discarding them.
+func (a *App) preopenStore() error {
+	ds, err := a.openStoreAt(a.dbPath)
+	if err != nil {
+		walPath := walFilePath(a.dbPath)
+		if _, statErr := os.Stat(walPath); statErr == nil {
+			backup := fmt.Sprintf("%s.bak%d", walPath, time.Now().Unix())
+			if renameErr := os.Rename(walPath, backup); renameErr == nil {
+				slog.Warn("DuckDB open failed; WAL renamed, retrying", "wal", walPath, "backup", backup)
+				ds, err = a.openStoreAt(a.dbPath)
+			}
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	a.sess = ds
+	return nil
+}
+
+// openStoreAt opens the store at the configured path or the default location.
+func (a *App) openStoreAt(path string) (*store.Store, error) {
+	if path != "" {
+		return store.OpenAt(path)
+	}
+	return store.Open()
+}
+
+// walFilePath returns the DuckDB WAL path for a given database path.
+// If dbPath is empty, the default store path is used.
+func walFilePath(dbPath string) string {
+	if dbPath == "" {
+		dbPath = store.Path()
+	}
+	return dbPath + ".wal"
+}
+
 // startup is called when the app starts — saves context and initializes Ollama client + DB.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
@@ -211,26 +255,28 @@ func (a *App) startup(ctx context.Context) {
 	a.cli = api.NewClient(u, newOllamaHTTPClient())
 	slog.Info("Ollama client ready", "addr", addr)
 
-	probeSignals("startup: before store.Open")
-	var ds *store.Store
-	if a.dbPath != "" {
-		ds, err = store.OpenAt(a.dbPath)
-	} else {
-		ds, err = store.Open()
+	probeSignals("startup: before store open")
+	if a.sess == nil {
+		// Normal path: preopenStore() in main() already opened the DB before
+		// Wails started. This fallback fires only in tests or atypical launch paths.
+		if a.dbPath != "" {
+			a.sess, err = store.OpenAt(a.dbPath)
+		} else {
+			a.sess, err = store.Open()
+		}
+		if err != nil {
+			slog.Error("db init failed", "error", err)
+			a.setMemInitErr(fmt.Errorf("database could not be opened: %w", err))
+			return
+		}
 	}
-	if err != nil {
-		slog.Error("db init failed", "error", err)
-		a.setMemInitErr(fmt.Errorf("database could not be opened: %w", err))
-		return
-	}
-	a.sess = ds
-	probeSignals("startup: after store.Open")
+	probeSignals("startup: store ready")
 	slog.Info("session store initialized")
 
 	// Memory never blocks startup. NewSystem reports an unprovisioned model or a
 	// missing ONNX Runtime as a state rather than an error, so the app is fully
 	// usable either way and retrieval simply falls back to its non-vector signals.
-	mem := memory.NewSystem(ds, memory.Config{
+	mem := memory.NewSystem(a.sess, memory.Config{
 		OllamaClient: a.cli,
 		ExtractModel: a.extractModel,
 	}, func(p memory.Progress) {

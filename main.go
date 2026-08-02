@@ -29,6 +29,15 @@ func main() {
 		}
 	}
 
+	// Open DuckDB before Wails/WebKit starts. DuckDB's initialization — schema
+	// setup plus WAL replay if a prior run crashed — pins cgo threads. Doing it
+	// here, before GTK creates its own OS threads, eliminates the thread
+	// contention that can hang the UI when both are starting at the same time.
+	if err := app.preopenStore(); err != nil {
+		println("Error: could not open database:", err.Error())
+		os.Exit(1)
+	}
+
 	// Create application with options
 	err := wails.Run(&options.App{
 		Title:  "LocalChat",
@@ -39,6 +48,7 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		OnStartup:        app.startup,
+		OnShutdown:       app.shutdown,
 		Bind: []interface{}{
 			app,
 		},
