@@ -9,6 +9,7 @@ import { renderPlanList } from './plan'
 import { escapeHtml, renderMarkdown, renderHighlighted, initMermaidIn } from './content'
 import { EventsOn } from '../wailsjs/runtime/runtime'
 import { renderToolsList } from './tools'
+import { openToolLightbox } from './tool-views'
 
 
 
@@ -133,39 +134,6 @@ function wirePinButton(div, rec) {
     });
 }
 
-// Opens a split-pane lightbox showing a tool call's arguments and result,
-// pretty-printed and syntax-highlighted where they parse as JSON.
-function openToolLightbox(rec) {
-    let argsPretty = rec.toolArgs || '';
-    try { argsPretty = JSON.stringify(JSON.parse(rec.toolArgs), null, 2); } catch {}
-
-    let resultPretty = rec.toolResult || '';
-    let resultLang = 'plaintext';
-    try { resultPretty = JSON.stringify(JSON.parse(rec.toolResult), null, 2); resultLang = 'json'; } catch {}
-
-    const overlay = document.createElement('div');
-    overlay.className = 'artifact-preview-overlay';
-    overlay.innerHTML = `
-        <div class="artifact-preview-panel tool-lightbox-panel">
-            <div class="artifact-preview-header">
-                <span class="artifact-preview-title">🔧 ${escapeHtml(rec.toolName || 'tool')}</span>
-                <div><button class="artifact-close-btn">&times;</button></div>
-            </div>
-            <div class="tool-lightbox-split">
-                <div class="tool-lightbox-pane">
-                    <div class="tool-lightbox-pane-label">Arguments</div>
-                    <pre class="artifact-preview-pre"><code>${renderHighlighted(argsPretty, 'json')}</code></pre>
-                </div>
-                <div class="tool-lightbox-pane">
-                    <div class="tool-lightbox-pane-label">Result</div>
-                    <pre class="artifact-preview-pre"><code>${renderHighlighted(resultPretty, resultLang)}</code></pre>
-                </div>
-            </div>
-        </div>`;
-    overlay.querySelector('.artifact-close-btn').addEventListener('click', () => overlay.remove());
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-    document.body.appendChild(overlay);
-}
 
 // Adds one message to the chat log and the in-memory timeline, and returns
 // its record (so callers can reconcile it later, e.g. once a seq is known).
