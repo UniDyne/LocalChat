@@ -42,6 +42,11 @@ type config struct {
 	// DBPath overrides the default sessions.db location. Empty means use the
 	// default (next to the executable, or in the working directory).
 	DBPath string `json:"db_path"`
+	// SearchEngine selects the web search backend: "ddgs" (default) or "searxng".
+	SearchEngine string `json:"search_engine"`
+	// SearxngEndpoint is the base URL for a SearXNG instance. Required only
+	// when SearchEngine is "searxng". Empty triggers public-instance selection.
+	SearxngEndpoint string `json:"searxng_endpoint"`
 }
 
 func loadConfig() *config {
@@ -142,6 +147,10 @@ type App struct {
 	dbPath string // empty → use store.Open default
 	sess   *store.Store
 
+	// searchEngine is the configured backend ("ddgs" or "searxng").
+	searchEngine    string
+	searxngEndpoint string
+
 	// workDirMu guards workDir, which is read from the tool-calling loop
 	// (toolRegistry, on every chat turn) and written from the frontend's
 	// directory picker — two different goroutines under Wails' bindings.
@@ -175,6 +184,7 @@ func NewApp() *App {
 	return &App{
 		addr: cfg.OllamaEndpoint, model: cfg.Model, mode: CotModeNone,
 		extractModel: cfg.ExtractModel, dbPath: cfg.DBPath,
+		searchEngine: cfg.SearchEngine, searxngEndpoint: cfg.SearxngEndpoint,
 	}
 }
 

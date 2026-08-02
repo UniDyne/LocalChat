@@ -8,6 +8,7 @@ import { renderArtifactList } from './artifacts'
 import { renderPlanList } from './plan'
 import { escapeHtml, renderMarkdown, renderHighlighted, initMermaidIn } from './content'
 import { EventsOn } from '../wailsjs/runtime/runtime'
+import { renderToolsList } from './tools'
 
 
 
@@ -46,8 +47,8 @@ let turnStartedAt = Date.now();
 // --- DOM refs ---
 const textarea   = document.querySelector('.chat-textarea');
 const sendBtn    = document.querySelector('.send-btn');
-const modelSel   = document.querySelector('select.dd-btn');
-const modeSel    = document.querySelector('select.mode-sel');
+const modelSel   = document.getElementById('modelSel');
+const modeSel    = document.getElementById('modeSel');
 const dirBtn      = document.getElementById('dirBtn');
 const dirClearBtn = document.getElementById('dirClearBtn');
 const statusText = document.querySelector('.status-left span:last-child'); // "Ready" text + dot
@@ -57,6 +58,35 @@ const statusBarMode  = document.getElementById('statusMode'); // shows current c
 const planBanner     = document.getElementById('planBanner');
 const planStopBtn    = document.getElementById('planStopBtn');
 const planResumeBtn  = document.getElementById('planResumeBtn');
+const cogBtn          = document.getElementById('cogBtn');
+const settingsOverlay = document.getElementById('settingsOverlay');
+const settingsCloseBtn = document.getElementById('settingsCloseBtn');
+const toolbarSummary  = document.getElementById('toolbarSummary');
+
+// Tracks current model/mode locally so the toolbar summary stays current
+// without requiring a second round-trip to the backend.
+let _summaryModel = '';
+let _summaryMode  = '';
+
+function updateToolbarSummary() {
+    if (!toolbarSummary) return;
+    const parts = [_summaryModel, (_summaryMode && _summaryMode !== 'none') ? _summaryMode : ''].filter(Boolean);
+    toolbarSummary.textContent = parts.join(' · ');
+}
+
+cogBtn?.addEventListener('click', () => {
+    if (!settingsOverlay) return;
+    settingsOverlay.style.display = '';
+    renderToolsList();
+});
+
+settingsCloseBtn?.addEventListener('click', () => {
+    if (settingsOverlay) settingsOverlay.style.display = 'none';
+});
+
+settingsOverlay?.addEventListener('click', (e) => {
+    if (e.target === settingsOverlay) settingsOverlay.style.display = 'none';
+});
 
 // --- Helpers ---
 function formatMessageTime(time) {
@@ -699,9 +729,11 @@ async function loadModels() {
     }
 }
 
-// Update the status bar to show the current model name.
+// Update the status bar and toolbar summary to show the current model name.
 function updateStatusBarModel(name) {
     if (statusBarModel) statusBarModel.textContent = name;
+    _summaryModel = name;
+    updateToolbarSummary();
 }
 
 modelSel?.addEventListener('change', async () => {
@@ -750,9 +782,11 @@ async function loadCotModes() {
     }
 }
 
-// Update the status bar to show the current cot mode.
+// Update the status bar and toolbar summary to show the current cot mode.
 function updateStatusBarMode(name) {
     if (statusBarMode) statusBarMode.textContent = `⏱ ${name}`;
+    _summaryMode = name;
+    updateToolbarSummary();
 }
 
 modeSel?.addEventListener('change', async () => {

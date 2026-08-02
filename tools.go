@@ -30,6 +30,8 @@ func (a *App) availableTools() []ToolDef {
 		a.listArtifactsTool(),
 		a.getArtifactTool(),
 		a.managePlanTool(),
+		a.webSearchTool(),
+		a.webFetchTool(),
 	}
 	if a.hasMemory() {
 		tools = append(tools, a.searchMemoryTool())

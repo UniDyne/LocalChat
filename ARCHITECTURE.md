@@ -18,37 +18,48 @@ and the backend pushes live updates back with Wails events
 ## Project Layout
 
 ```
-simple-cot-chat/
-├── main.go                  # entry point — Wails app setup, embeds frontend/dist
+LocalChat/
+├── main.go                  # entry point — Wails app setup, embeds frontend/dist, --db flag
 ├── app.go                   # App struct: config loading, SendChat turn orchestration,
-│                             #   cot mode handling (loadCotConfig, cotEvalWrapper/cotAnswerWrapper),
-│                             #   chatWithTools (tool-calling loop), session/message RPC methods
-├── tools.go                 # ToolDef type, tool registry, dispatch
+│                            #   cot mode handling (loadCotConfig, cotEvalWrapper/cotAnswerWrapper),
+│                            #   chatWithTools (tool-calling loop), session/message RPC methods,
+│                            #   directory picker, per-session tool RPC (GetSessionToolStates,
+│                            #   SetSessionToolEnabled)
+├── tools.go                 # ToolDef type, availableTools(), toolRegistry(), dispatch
 ├── tools_plan.go            # manage_plan
 ├── tools_artifacts.go       # create_artifact / list_artifacts / get_artifact
 ├── tools_skills.go          # search_skills / load_skill / create_skill / update_skill
+├── tools_files.go           # list_files / read_file / write_file / update_file (dir-gated)
+├── tools_memory.go          # search_memory (corpus-gated)
+├── tools_search.go          # web_search (DDG scraper) and web_fetch (Readability pipeline)
 ├── artifacts.go, skills.go  # thin frontend-facing RPC wrappers around store/skill packages
-├── store/store.go           # DuckDB schema + queries (sessions, messages, artifacts)
+├── store/store.go           # DuckDB schema + queries (sessions, messages, artifacts,
+│                            #   plan_steps, session_tool_disabled)
+├── memory/                  # semantic memory subsystem (BM25, vector embeddings, entity graph)
 ├── skill/skill.go           # skill file discovery — frontmatter parsing, create/update/load
 ├── go.mod / go.sum          # Go module dependencies
 ├── wails.json               # Wails config (build commands, metadata)
-├── config.json              # runtime config: ollama_endpoint, model (not committed as a template)
 ├── conf/
 │   ├── SYSTEM.md            # base system prompt, prepended to every turn
-│   ├── cot/*.md              # one file per custom chain-of-thought mode (optional frontmatter: max_tokens)
-│   └── skills/*.md           # skill files (frontmatter: name, description) the model can load/write
+│   ├── cot/*.md             # one file per custom chain-of-thought mode (optional frontmatter: max_tokens)
+│   └── skills/*.md          # skill files (frontmatter: name, description) the model can load/write
 ├── build/                   # platform-specific packaging assets (icons, etc.)
 └── frontend/
     ├── index.html            # UI shell — full DOM structure, no templating
     ├── package.json          # Vite + marked/highlight.js/math-marked deps
-    ├── wailsjs/               # generated Go↔JS bindings (hand-maintained here — see note below)
+    ├── wailsjs/              # generated Go↔JS bindings (hand-maintained here — see note below)
     └── src/
         ├── api.js            # backend abstraction layer — every Go binding call goes through here
-        ├── app.js            # chat send/receive loop, status bar, timing, live event handlers
+        ├── app.js            # chat send/receive loop, settings lightbox, toolbar summary,
+        │                     #   status bar, timing, live event handlers
         ├── sessions.js       # session list, switching, session:renamed live updates
-        ├── artifacts.js      # artifacts sidebar list + content viewer
-        ├── content.js        # markdown rendering (marked + math-marked) and syntax highlighting (highlight.js)
-        ├── app.css / style.css / markdown.css
+        ├── artifacts.js      # artifacts sidebar list + content viewer + import button
+        ├── tools.js          # tool toggle checkboxes rendered into the settings lightbox
+        ├── plan.js           # plan tab checklist rendering
+        ├── memory.js         # memory tab: status, search UI, source list
+        ├── content.js        # markdown rendering (marked + math-marked), syntax highlighting,
+        │                     #   Mermaid diagram rendering
+        ├── app.css / markdown.css
         └── assets/           # fonts, images
 ```
 
@@ -63,7 +74,7 @@ simple-cot-chat/
 
 ## Data model (DuckDB)
 
-Three tables, defined in `store.Open`:
+Five tables, defined in `store.Open`:
 
 - **`sessions`** — `id`, `title`, `created_at`. Titles start as "New Chat"
   and are rewritten from the user's first message as soon as it's sent (see
@@ -78,7 +89,17 @@ Three tables, defined in `store.Open`:
   max and the insert, so it can't collide under concurrent writes to the
   same session.
 - **`artifacts`** — persisted content (`title`, `content`, `content_type`)
-  created via the `create_artifact` tool, independent of the message log.
+  created via the `create_artifact` tool or imported by the user, independent
+  of the message log.
+- **`plan_steps`** — the current plan for a session: ordered `{content,
+  status}` rows (at most one `in_progress` at a time). Written in full on
+  every `manage_plan` call (`SetPlan`); read by the frontend to drive
+  auto-continuation and populate the Plan sidebar tab.
+- **`session_tool_disabled`** — `(session_id, tool_name)` pairs for tools
+  the user has explicitly disabled in a session. `toolRegistry()` calls
+  `GetDisabledTools` and excludes matching entries from the list sent to
+  Ollama. On error it fails open (returns the full tool list) so a DB hiccup
+  doesn't silently block the model from answering.
 
 ## Turn lifecycle (`SendChat` in `app.go`)
 
@@ -156,28 +177,112 @@ live event so a session's title updates immediately when the backend
 auto-titles it, instead of waiting for the whole turn to finish.
 
 ### `frontend/src/artifacts.js` — Artifacts Sidebar
-Lists and displays artifacts created via `create_artifact`, refreshed on the
-`artifact:created` event.
+Lists and displays artifacts created via `create_artifact` or imported by the
+user (via the **Import** button), refreshed on the `artifact:created` event.
+
+### `frontend/src/tools.js` — Tool Toggle List
+Exports `renderToolsList()`, called by `app.js` whenever the settings lightbox
+opens. Fetches the current session's tool states via `GetSessionToolStates` and
+renders a checkbox row per tool. Each toggle calls `SetSessionToolEnabled` on
+change; unchecked tools are excluded from the model's tool registry for the
+rest of that session.
+
+### `frontend/src/plan.js` — Plan Tab
+Reads the current plan from the `manage_plan` tool call persisted in the
+message history and renders it as a checklist in the Plan sidebar tab. The
+frontend (not the backend) drives plan auto-continuation: after each tool
+call completes, `plan.js` picks the next `in_progress` or `pending` step and
+re-sends it as a `SendChat` call.
+
+### `frontend/src/memory.js` — Memory Tab
+Handles the Memory sidebar tab: provisioning status, search form (with BM25/
+vector/entity/n-gram weight sliders), result list with per-result signal
+scores, indexed-source list, and the folder-import flow.
 
 ### `frontend/src/content.js` — Rendering
-Markdown (`marked` + `math-marked` for LaTeX) and syntax highlighting
-(`highlight.js`, a curated language subset to keep bundle size down).
+Markdown (`marked` + `math-marked` for LaTeX), syntax highlighting
+(`highlight.js`, a curated language subset to keep bundle size down), and
+Mermaid diagram rendering. Mermaid is initialised with `startOnLoad: false`;
+`mermaid.run({nodes})` is called explicitly after each block is inserted into
+the DOM, so diagrams render correctly inside streamed messages.
 
 ### `frontend/index.html` — Presentation Layer
 Single static HTML shell — all structure in one place, styled via CSS custom
 properties in `app.css`. Vite processes the imported JS modules but doesn't
 template the HTML body itself.
 
+### Settings Lightbox
+The toolbar was simplified to a single ⚙ cog button (`#cogBtn`) and a `<span>`
+(`#toolbarSummary`) that shows the current model · mode. All session settings
+live in a `position:fixed` overlay centred in the viewport (z-index 600):
+
+- **Model** — `<select id="modelSel">`: populated from `GetModels()`
+- **Mode** — `<select id="modeSel">`: populated from `GetCotModes()`
+- **Dir** — directory picker that enables the file tools for the session
+- **Tools** — per-tool checkboxes rendered by `tools.js:renderToolsList()`
+
+The lightbox closes on backdrop click, the × button, or `settingsCloseBtn`.
+This replaces floating dropdowns that could position off-screen; because the
+overlay uses `inset:0` and `align-items:center` it can never overflow.
+
 ### `app.go` — Backend Orchestration
-Loads `config.json`, holds the Ollama client/session store, and implements
-every Wails-exported method: `SendChat` (turn orchestration, described
-above), session management, message pin/unpin, and cot-mode listing/loading.
+Loads `config.json` (searched in OS config dir → executable dir → `.`), holds
+the Ollama client/session store, and implements every Wails-exported method:
+`SendChat` (turn orchestration, described above), session management, message
+pin/unpin, cot-mode listing/loading, directory selection, and the tool-state
+RPC pair (`GetSessionToolStates`, `SetSessionToolEnabled`).
 
 ### `store/` and `skill/` — Persistence and Skill Discovery
 `store` wraps all DuckDB access behind typed methods. `skill` discovers,
 loads, and writes skill files under `conf/skills/` by parsing a small
 hand-rolled frontmatter format (name/description) — deliberately not a full
 YAML parser, since skill files only need flat single-line string fields.
+
+## Web Search and Fetch — `tools_search.go`
+
+### `web_search`
+
+Scrapes the DuckDuckGo lite endpoint (no API key, no redirect unwrapping):
+
+```
+POST https://lite.duckduckgo.com/lite/
+Content-Type: application/x-www-form-urlencoded
+Body: q=<query>&kl=us-en
+```
+
+The HTML response is walked with `golang.org/x/net/html`. Two node types are
+collected in a single pass: `<a class="result-link">` (title + direct URL)
+and `<td class="result-snippet">` (snippet text). The results are returned as
+a JSON array of `{title, url, snippet}`. Results are cached in-process for 10
+minutes, keyed by `(engine, query, n)`.
+
+A SearXNG client is stubbed (returns an `unsupported search engine` error
+until implemented); the config fields `search_engine` and `searxng_endpoint`
+are already plumbed.
+
+### `web_fetch`
+
+Retrieves a URL and returns clean Markdown via the following pipeline:
+
+1. HTTP GET with a browser User-Agent + `Accept: text/html`
+2. Reject non-HTML Content-Types early
+3. Read up to 5 MB
+4. **Readability** (`codeberg.org/readeck/go-readability/v2`, the successor to
+   the deprecated `go-shiori/go-readability`) strips navigation, ads, and
+   sidebars, returning an `Article` with a `*html.Node` of cleaned content
+5. **html-to-markdown** (`github.com/JohannesKaufmann/html-to-markdown/v2`)
+   converts the `*html.Node` directly to Markdown, preserving code fences,
+   links, and headings
+6. Fallback: if Readability yields a nil Node (JS-heavy SPAs, content-light
+   pages), a plain tree walk (`extractVisibleText`) collects visible text,
+   skipping `script`/`style`/`noscript`/`head` subtrees
+7. Unicode-safe truncation at `max_chars` (default 8000) using `[]rune`
+   slicing to avoid splitting multi-byte characters
+
+Cached per URL for 30 minutes; FIFO-evicted at 50 entries.
+
+JavaScript rendering (iframe/WebView Option B) is deferred; see
+`Search-Tool-Plan.md`.
 
 ## Design Decisions
 
@@ -201,3 +306,25 @@ YAML parser, since skill files only need flat single-line string fields.
   the frontend from event arrival times, not sent by the backend, since it's
   a live-session UX affordance, not something that needs to survive a
   reload.
+- **Tools fail open** — if `GetDisabledTools` fails, `toolRegistry()` returns
+  the full tool list rather than erroring, so a transient DB read failure
+  doesn't silently prevent the model from responding.
+- **Settings lightbox over floating dropdowns** — a viewport-centred modal
+  (`position:fixed; inset:0`) cannot overflow the window regardless of where
+  the trigger button is. The earlier approach (absolutely-positioned dropdowns
+  anchored to toolbar buttons) was fine on large displays but clipped on small
+  ones and when the toolbar sat near the bottom of the window.
+- **Tool summary in toolbar, not tool list** — the cog button + `model · mode`
+  text keeps the toolbar compact while the lightbox shows everything. Showing
+  each enabled tool name in the toolbar would clutter it and change width
+  constantly.
+- **DDG lite instead of an API** — DuckDuckGo's lite endpoint (`/lite/`) is
+  plain HTML with no JS, no API key, and no session cookie requirement. It's
+  structurally simpler to scrape than the main DDG page and mirrors what the
+  Python `duckduckgo-search` library does. The trade-off is it's an unofficial
+  interface that could change; `Search-Tool-Plan.md` tracks the SearXNG
+  alternative.
+- **Readability + html-to-markdown over raw text** — returning clean Markdown
+  from `web_fetch` rather than raw HTML or plain text lets the model
+  understand document structure (headings, code blocks, links) without
+  spending tokens parsing tags.

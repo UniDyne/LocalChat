@@ -117,13 +117,25 @@ an attempt to emulate the thinking modes of Claude.
     checklist.
   - `create_artifact` / `list_artifacts` / `get_artifact`: persist
     substantial content (documents, code, notes) outside the chat log,
-    browsable in the artifacts sidebar.
+    browsable in the artifacts sidebar. You can also import a local file as an
+    artifact via the **Import** button in the Artifacts sidebar.
   - `search_skills` / `load_skill` / `create_skill` / `update_skill`: a
     lightweight skill system: markdown files under `conf/skills/` the model
     can discover by name/description, load on demand, and write new ones to
     when it works out something worth remembering for next time.
   - `search_memory`: search your own material — Markdown notes you've indexed,
     earlier conversations, and saved artifacts. See **Memory** below.
+  - `web_search`: query DuckDuckGo and get back ranked title/URL/snippet
+    results. Results are cached in-process for 10 minutes.
+  - `web_fetch`: retrieve any URL and return the page as clean Markdown via
+    Mozilla Readability. Ideal for reading documentation, articles, and
+    reference pages. Cached per URL for 30 minutes.
+  - `list_files` / `read_file` / `write_file` / `update_file`: sandboxed
+    read/write access to a directory you select. Only available after you
+    choose a directory via the **Dir** control in the Settings panel.
+- **Per-session tool toggles.** Enable or disable individual tools for the
+  current session from the Settings panel (⚙). Disabled tools are excluded
+  from the tool registry sent to the model on that session's turns.
 - **Memory.** A local retrieval system over your own material, in the Memory
   tab of the left sidebar. Point it at a folder of Markdown notes (an Obsidian
   vault works well — it understands wikilinks, aliases, tags, frontmatter and
@@ -161,19 +173,36 @@ an attempt to emulate the thinking modes of Claude.
 ## Project layout
 
 ```
-simple-cot-chat/
-├── main.go              # entry point — Wails app setup
-├── app.go               # chat turn orchestration (SendChat), cot mode handling, config
-├── tools*.go            # tool implementations (manage_plan, artifacts, skills, files)
-├── store/               # DuckDB-backed session/message/artifact persistence
-├── skill/               # skill file discovery (frontmatter parsing, CRUD)
+LocalChat/
+├── main.go                # entry point — Wails app setup, --db flag
+├── app.go                 # App struct, config loading, SendChat turn orchestration
+├── tools.go               # ToolDef type, availableTools(), toolRegistry()
+├── tools_search.go        # web_search (DuckDuckGo scraper) and web_fetch (Readability)
+├── tools_artifacts.go     # create_artifact / list_artifacts / get_artifact
+├── tools_files.go         # list_files / read_file / write_file / update_file
+├── tools_memory.go        # search_memory
+├── tools_plan.go          # manage_plan
+├── tools_skills.go        # search_skills / load_skill / create_skill / update_skill
+├── artifacts.go           # artifact RPC methods (including import)
+├── skills.go              # skill RPC wrappers
+├── store/                 # DuckDB-backed session/message/artifact/plan/tool store
+├── memory/                # semantic memory subsystem (embeddings, BM25, entity graph)
+├── skill/                 # skill file discovery (frontmatter parsing, CRUD)
 ├── conf/
-│   ├── SYSTEM.md        # base system prompt
-│   ├── cot/*.md         # one file per custom CoT mode
-│   └── skills/*.md      # skills the model has created/discovered
+│   ├── SYSTEM.md          # base system prompt
+│   ├── cot/*.md           # one file per custom CoT mode
+│   └── skills/*.md        # skills the model has created/discovered
 └── frontend/
-    ├── index.html       # UI shell
-    └── src/             # vanilla JS: app.js (chat/status), sessions.js, api.js, artifacts.js
+    ├── index.html         # UI shell
+    └── src/
+        ├── app.js         # send/receive loop, settings lightbox, status bar
+        ├── api.js         # backend abstraction — all Wails binding calls
+        ├── sessions.js    # session list, switching
+        ├── artifacts.js   # artifacts sidebar, import button
+        ├── tools.js       # tool toggle checkboxes (inside Settings panel)
+        ├── plan.js        # plan tab checklist
+        ├── memory.js      # memory tab UI
+        └── content.js     # Markdown + math rendering, syntax highlighting, Mermaid
 ```
 
 ## Getting started
@@ -213,20 +242,44 @@ things to expect:
   once the newer library has written to it the file won't reopen under an older
   one. If you're changing DuckDB versions, copy `sessions.db` aside first.
 
+### CLI flags
+
+| Flag | Description |
+|------|-------------|
+| `--db <path>` | Override the default `sessions.db` location |
+
+Pass flags to the app under `wails dev` with `-appargs`:
+
+```
+wails dev -appargs "--db /path/to/custom.db"
+```
+
 ### Configuration
 
-On startup the app reads `config.json` next to the executable (falling back
-to sensible defaults if it's missing):
+On startup the app reads `config.json` in this order: the OS config
+directory (e.g. `~/.config/localchat/`), the directory containing the
+executable, then the current working directory. Falls back to built-in
+defaults if not found.
 
 ```json
 {
   "ollama_endpoint": "http://localhost:11434",
   "model": "qwen3.5:9b",
-  "extract_model": ""
+  "extract_model": "",
+  "db_path": "",
+  "search_engine": "ddgs",
+  "searxng_endpoint": ""
 }
 ```
 
-(these are also the built-in defaults used if `config.json` is missing)
+| Key | Default | Description |
+|-----|---------|-------------|
+| `ollama_endpoint` | `http://localhost:11434` | Ollama server URL |
+| `model` | `qwen3.5:9b` | Default chat model |
+| `extract_model` | *(empty)* | Model for memory entity extraction; empty disables it |
+| `db_path` | *(empty)* | Override the default `sessions.db` location |
+| `search_engine` | `ddgs` | Web search backend: `ddgs` (DuckDuckGo) or `searxng` |
+| `searxng_endpoint` | *(empty)* | SearXNG instance URL (required when `search_engine` is `searxng`) |
 
 The Ollama endpoint can also be overridden with the `OLLAMA_HOST` environment
 variable, which takes precedence over `config.json`.
