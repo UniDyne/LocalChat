@@ -116,6 +116,14 @@
   .cog-btn{background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer;padding:3px 7px;font-size:13px;border-radius:var(--radius);line-height:1;flex-shrink:0}
   .cog-btn:hover{border-color:var(--accent);color:var(--text-primary)}
   .toolbar-summary{font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* Context-usage indicator: estimated tokens in the pinned context vs the model's trained window. */
+  .ctx-meter{margin-left:auto;display:flex;align-items:center;gap:6px;flex-shrink:0}
+  .ctx-meter[hidden]{display:none}
+  .ctx-meter-track{width:88px;height:6px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:999px;overflow:hidden}
+  .ctx-meter-fill{height:100%;width:0;background:var(--accent);border-radius:999px;transition:width .2s ease,background-color .2s ease}
+  .ctx-meter.ctx-warn .ctx-meter-fill{background:#d9a441}
+  .ctx-meter.ctx-high .ctx-meter-fill{background:#d9534f}
+  .ctx-meter-label{font-size:10px;color:var(--text-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 
   /* Settings lightbox */
   .settings-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:600}

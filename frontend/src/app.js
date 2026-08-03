@@ -1,6 +1,6 @@
 import './style.css';
 import './app.css';
-import { sendMessage, setModel, getModel, listModels, getCurrentSession, setMessagePinned } from './api';
+import { sendMessage, setModel, getModel, listModels, getCurrentSession, setMessagePinned, getModelContextLength } from './api';
 import { listCotModes, getCotMode, setCotMode } from './api';
 import { selectDirectory, clearDirectory, getWorkDir } from './api';
 import { renderSessionList, getActiveSessionId } from './sessions'
@@ -75,6 +75,70 @@ function updateToolbarSummary() {
     toolbarSummary.textContent = parts.join(' · ');
 }
 
+// --- Context-usage meter ---
+// The denominator is the active model's trained context window (fetched from
+// Ollama); the numerator is a client-side estimate of the tokens in the pinned
+// context plus whatever is currently typed. It's an estimate by design (~4
+// chars/token, and it doesn't count the system prompt or tool schemas the
+// backend adds), so it's a pressure gauge, not an exact accounting.
+const ctxMeter      = document.getElementById('ctxMeter');
+const ctxMeterFill  = document.getElementById('ctxMeterFill');
+const ctxMeterLabel = document.getElementById('ctxMeterLabel');
+
+// Trained context window of the active model, in tokens. 0 means "unknown"
+// (Ollama couldn't report it), which hides the meter entirely.
+let _contextMax = 0;
+
+// Rough token estimate: ~4 characters per token is the usual English
+// approximation, with a small per-message overhead for role/formatting.
+function estimateTokens(text) {
+    if (!text) return 0;
+    return Math.ceil(text.length / 4);
+}
+
+function estimateContextTokens() {
+    let tokens = 0;
+    for (const m of computeHistory()) {
+        // +8 tokens/message for the role marker and chat-template scaffolding.
+        tokens += estimateTokens(m.content) + 8;
+    }
+    if (textarea) tokens += estimateTokens(textarea.value);
+    return tokens;
+}
+
+// Refetch the active model's context window, then repaint. Called on model
+// load/change; the estimate itself repaints far more often (typing, pinning).
+async function refreshContextMax() {
+    _contextMax = await getModelContextLength('');
+    updateContextMeter();
+}
+
+function updateContextMeter() {
+    if (!ctxMeter) return;
+    if (!_contextMax || _contextMax <= 0) {
+        ctxMeter.hidden = true;
+        return;
+    }
+    const used = estimateContextTokens();
+    const ratio = Math.min(used / _contextMax, 1);
+    const pct = Math.round(ratio * 100);
+
+    ctxMeter.hidden = false;
+    if (ctxMeterFill) ctxMeterFill.style.width = pct + '%';
+    if (ctxMeterLabel) ctxMeterLabel.textContent = `${formatTokenCount(used)} / ${formatTokenCount(_contextMax)} (${pct}%)`;
+
+    ctxMeter.classList.toggle('ctx-warn', ratio >= 0.75 && ratio < 0.9);
+    ctxMeter.classList.toggle('ctx-high', ratio >= 0.9);
+    ctxMeter.title = `Estimated context usage: ~${used.toLocaleString()} of ${_contextMax.toLocaleString()} tokens`;
+}
+
+// Compact token count: 1234 -> "1.2k", 32768 -> "32k".
+function formatTokenCount(n) {
+    if (n < 1000) return String(n);
+    const k = n / 1000;
+    return (k < 10 ? k.toFixed(1) : Math.round(k)) + 'k';
+}
+
 cogBtn?.addEventListener('click', () => {
     if (!settingsOverlay) return;
     settingsOverlay.style.display = '';
@@ -98,6 +162,7 @@ function formatMessageTime(time) {
 export function resetMessages() {
     timeline = [];
     renderedSeqs = new Set();
+    updateContextMeter(); // switching to/clearing a session empties the context
 }
 
 // Messages sent to the backend as context on the next turn: pinned
@@ -130,6 +195,7 @@ function wirePinButton(div, rec) {
             btn.textContent = rec.pinned ? '📌' : '📍';
             btn.title = rec.pinned ? 'Unpin (exclude from context)' : 'Pin (include in context)';
             div.classList.toggle('msg-unpinned', !rec.pinned);
+            updateContextMeter(); // pin/unpin changes what's in context
         } catch (err) { console.error('pin toggle failed', err); }
     });
 }
@@ -201,6 +267,7 @@ export function addMessage(entry) {
     chatLog.appendChild(div);
     initMermaidIn(div);
     chatLog.scrollTop = chatLog.scrollHeight;
+    updateContextMeter(); // a new message changed the pinned context
     return rec;
 }
 
@@ -386,6 +453,7 @@ async function doSend() {
 
     textarea.value     = '';
     textarea.style.height = 'auto';
+    updateContextMeter(); // clearing the draft doesn't fire an input event
 
     await sendAndRender(text);
 }
@@ -661,6 +729,7 @@ textarea.addEventListener('keydown', (e) => {
 textarea.addEventListener('input', function() {
     this.style.height = 'auto';
     this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+    updateContextMeter();
 });
 
 // --- Model selector ---
@@ -702,6 +771,9 @@ function updateStatusBarModel(name) {
     if (statusBarModel) statusBarModel.textContent = name;
     _summaryModel = name;
     updateToolbarSummary();
+    // The context window is model-specific, so re-read it whenever the active
+    // model changes (fire-and-forget; the meter repaints when it resolves).
+    refreshContextMax();
 }
 
 modelSel?.addEventListener('change', async () => {

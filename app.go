@@ -47,6 +47,39 @@ type config struct {
 	// SearxngEndpoint is the base URL for a SearXNG instance. Required only
 	// when SearchEngine is "searxng". Empty triggers public-instance selection.
 	SearxngEndpoint string `json:"searxng_endpoint"`
+	// The fields below are written back by the app when the user changes a
+	// setting in the config lightbox (see persistConfig), so a selection
+	// survives a restart. The ones above are read-only, hand-edited config.
+
+	// Mode is the last-selected chain-of-thought mode. Empty means "none".
+	Mode string `json:"mode"`
+	// WorkDir is the last-selected file-tools directory. Empty means none
+	// selected (file tools disabled). Restored on launch if it still exists.
+	WorkDir string `json:"work_dir"`
+	// DisabledTools is the global default set of tools to start new sessions
+	// with disabled. Per-session toggles still override this for a given
+	// session (see GetSessionToolStates / seedSessionTools).
+	DisabledTools []string `json:"disabled_tools"`
+}
+
+// resolveConfigPath returns the config.json path to read from and write back
+// to. It mirrors loadConfig's search order (conf/ dir, then next to the
+// executable, then the working directory) so a save lands on the same file a
+// load found. When no file exists yet, it defaults to conf/config.json — the
+// preferred location per loadConfig — so a first save creates it there.
+func resolveConfigPath() string {
+	dirs := []string{confDir()}
+	if execPath, err := os.Executable(); err == nil {
+		dirs = append(dirs, filepath.Dir(execPath))
+	}
+	dirs = append(dirs, ".")
+	for _, dir := range dirs {
+		p := filepath.Join(dir, "config.json")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return filepath.Join(confDir(), "config.json")
 }
 
 func loadConfig() *config {
@@ -79,6 +112,92 @@ func loadConfig() *config {
 	}
 
 	return cfg
+}
+
+// persistConfig writes the user's current lightbox selections (model, mode,
+// work_dir, disabled_tools) back to config.json. It merges into the existing
+// file rather than rewriting it from the struct, so hand-edited keys the
+// lightbox doesn't own — ollama_endpoint, extract_model, and any extra keys a
+// user keeps around — are preserved untouched. Failures are logged, never
+// surfaced: a config that can't be saved shouldn't break the setting change
+// the user just made in the UI.
+func (a *App) persistConfig() {
+	if a.configPath == "" {
+		return
+	}
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
+	// Read-modify-write on a generic map to keep unmanaged keys intact.
+	m := map[string]any{}
+	if data, err := os.ReadFile(a.configPath); err == nil {
+		if err := json.Unmarshal(data, &m); err != nil {
+			slog.Warn("config.json unparseable; rewriting managed keys only", "path", a.configPath, "error", err)
+			m = map[string]any{}
+		}
+	}
+
+	tools := a.disabledTools
+	if tools == nil {
+		tools = []string{} // marshal as [] rather than null
+	}
+	m["model"] = a.model
+	m["mode"] = a.mode
+	m["work_dir"] = a.workDirSnapshot()
+	m["disabled_tools"] = tools
+
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		slog.Warn("failed to marshal config.json", "error", err)
+		return
+	}
+	if err := os.WriteFile(a.configPath, append(out, '\n'), 0o644); err != nil {
+		slog.Warn("failed to write config.json", "path", a.configPath, "error", err)
+	}
+}
+
+// setGlobalToolDefault updates the global default disabled-tools set (used to
+// seed new sessions) to reflect a lightbox toggle, then persists it. This is
+// separate from the per-session state SetSessionToolEnabled writes: the toggle
+// affects both the current session and the default future sessions inherit.
+func (a *App) setGlobalToolDefault(toolName string, enabled bool) {
+	a.configMu.Lock()
+	if enabled {
+		filtered := a.disabledTools[:0:0]
+		for _, n := range a.disabledTools {
+			if n != toolName {
+				filtered = append(filtered, n)
+			}
+		}
+		a.disabledTools = filtered
+	} else {
+		found := false
+		for _, n := range a.disabledTools {
+			if n == toolName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			a.disabledTools = append(a.disabledTools, toolName)
+		}
+	}
+	a.configMu.Unlock()
+	a.persistConfig()
+}
+
+// seedSessionTools applies the global default disabled-tools set to a freshly
+// created session, so a new chat starts from the user's last lightbox choice.
+// Per-session toggles made later override these rows for that session.
+func (a *App) seedSessionTools(sessionID string) {
+	a.configMu.Lock()
+	defaults := append([]string(nil), a.disabledTools...)
+	a.configMu.Unlock()
+	for _, name := range defaults {
+		if err := a.sess.SetToolEnabled(sessionID, name, false); err != nil {
+			slog.Warn("failed to seed session tool default", "session", sessionID, "tool", name, "error", err)
+		}
+	}
 }
 
 // Timeouts for talking to Ollama.
@@ -176,15 +295,44 @@ type App struct {
 	// extractModel is the model memory's entity pass uses, from config.json. Empty
 	// leaves that pass disabled.
 	extractModel string
+
+	// configPath is the config.json the app persists lightbox selections back
+	// to (see persistConfig). Resolved once at construction.
+	configPath string
+	// configMu serializes config.json writes and guards disabledTools, both of
+	// which can be touched from concurrent Wails binding goroutines.
+	configMu sync.Mutex
+	// disabledTools is the global default disabled-tools set (config.json's
+	// disabled_tools), used to seed new sessions. Guarded by configMu.
+	disabledTools []string
 }
 
 // NewApp creates a new App with defaults.
 func NewApp() *App {
 	cfg := loadConfig()
+
+	mode := cfg.Mode
+	if mode == "" {
+		mode = CotModeNone
+	}
+
+	// Only restore a persisted directory if it still exists — a saved path can
+	// go stale between runs (removed, unmounted), and silently enabling the
+	// file tools on a missing directory would surface as confusing tool errors.
+	workDir := cfg.WorkDir
+	if workDir != "" {
+		if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
+			slog.Warn("saved work_dir no longer exists; ignoring", "dir", workDir)
+			workDir = ""
+		}
+	}
+
 	return &App{
-		addr: cfg.OllamaEndpoint, model: cfg.Model, mode: CotModeNone,
+		addr: cfg.OllamaEndpoint, model: cfg.Model, mode: mode,
 		extractModel: cfg.ExtractModel, dbPath: cfg.DBPath,
 		searchEngine: cfg.SearchEngine, searxngEndpoint: cfg.SearxngEndpoint,
+		workDir: workDir, disabledTools: cfg.DisabledTools,
+		configPath: resolveConfigPath(),
 	}
 }
 
@@ -789,6 +937,7 @@ func (a *App) SetModel(name string) error {
 	}
 	a.model = name
 	slog.Info("model changed", "model", a.model)
+	a.persistConfig()
 	return nil
 }
 
@@ -815,6 +964,62 @@ func (a *App) ListModels() ([]string, error) {
 		names = append(names, m.Name)
 	}
 	return names, nil
+}
+
+// ModelContextLength returns a model's trained maximum context length in
+// tokens, read from Ollama's Show API. The frontend uses it as the denominator
+// for the toolbar's context-usage indicator. An empty name means the currently
+// selected model. It returns 0 (with an error) when the value can't be read, so
+// the UI can simply hide the indicator rather than show a bogus bar.
+func (a *App) ModelContextLength(name string) (int, error) {
+	if a.cli == nil {
+		return 0, fmt.Errorf("Ollama client not initialized")
+	}
+	if name == "" {
+		name = a.model
+	}
+	if name == "" {
+		return 0, fmt.Errorf("no model selected")
+	}
+
+	ctx, cancel := a.shortOllamaCall()
+	defer cancel()
+
+	resp, err := a.cli.Show(ctx, &api.ShowRequest{Model: name})
+	if err != nil {
+		return 0, fmt.Errorf("could not read model info for %s: %w", name, err)
+	}
+	n := contextLengthFromModelInfo(resp.ModelInfo)
+	if n <= 0 {
+		return 0, fmt.Errorf("model %s does not report a context length", name)
+	}
+	return n, nil
+}
+
+// contextLengthFromModelInfo pulls the trained context length out of Ollama's
+// model_info map. The key is architecture-scoped (e.g. "qwen3.context_length",
+// "llama.context_length"), so it matches on the ".context_length" suffix rather
+// than hard-coding an architecture. Numbers arrive JSON-decoded, so tolerate the
+// handful of numeric types that can show up (float64 is what encoding/json uses).
+func contextLengthFromModelInfo(info map[string]any) int {
+	for k, v := range info {
+		if !strings.HasSuffix(k, ".context_length") {
+			continue
+		}
+		switch n := v.(type) {
+		case float64:
+			return int(n)
+		case int:
+			return n
+		case int64:
+			return int(n)
+		case json.Number:
+			if i, err := n.Int64(); err == nil {
+				return int(i)
+			}
+		}
+	}
+	return 0
 }
 
 // workDirSnapshot returns the currently selected directory (empty if none),
@@ -856,6 +1061,7 @@ func (a *App) SelectDirectory() (string, error) {
 	a.workDir = dir
 	a.workDirMu.Unlock()
 	slog.Info("file tool directory selected", "dir", dir)
+	a.persistConfig()
 	return dir, nil
 }
 
@@ -866,6 +1072,7 @@ func (a *App) ClearDirectory() {
 	a.workDir = ""
 	a.workDirMu.Unlock()
 	slog.Info("file tool directory cleared")
+	a.persistConfig()
 }
 
 // confDir returns the path to the "conf" directory (holding SYSTEM.md, cot/,
@@ -951,6 +1158,7 @@ func (a *App) SetCotMode(name string) error {
 	}
 	a.mode = name
 	slog.Info("cot mode changed", "mode", a.mode)
+	a.persistConfig()
 	return nil
 }
 
@@ -1465,6 +1673,7 @@ func (a *App) persist(sessionID string, msg store.NewMessage) ChatTurnMessage {
 // CreateSession starts a new chat session and returns its ID.
 func (a *App) CreateSession() string {
 	id, _ := a.sess.CreateSession("New Chat")
+	a.seedSessionTools(id) // start from the global default disabled-tools set
 	slog.Info("created session", "id", id)
 	return id
 }
@@ -1557,7 +1766,13 @@ func (a *App) GetSessionToolStates(sessionID string) ([]ToolState, error) {
 	return states, nil
 }
 
-// SetSessionToolEnabled enables or disables a specific tool for a session.
+// SetSessionToolEnabled enables or disables a specific tool for a session, and
+// records the choice as the global default so new sessions inherit it and it
+// survives a restart (see setGlobalToolDefault / seedSessionTools).
 func (a *App) SetSessionToolEnabled(sessionID, toolName string, enabled bool) error {
-	return a.sess.SetToolEnabled(sessionID, toolName, enabled)
+	if err := a.sess.SetToolEnabled(sessionID, toolName, enabled); err != nil {
+		return err
+	}
+	a.setGlobalToolDefault(toolName, enabled)
+	return nil
 }

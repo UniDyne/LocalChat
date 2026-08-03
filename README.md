@@ -274,7 +274,10 @@ defaults if not found.
   "extract_model": "",
   "db_path": "",
   "search_engine": "ddgs",
-  "searxng_endpoint": ""
+  "searxng_endpoint": "",
+  "mode": "none",
+  "work_dir": "",
+  "disabled_tools": []
 }
 ```
 
@@ -286,9 +289,21 @@ defaults if not found.
 | `db_path` | *(empty)* | Override the default `sessions.db` location |
 | `search_engine` | `ddgs` | Web search backend: `ddgs` (DuckDuckGo) or `searxng` |
 | `searxng_endpoint` | *(empty)* | SearXNG instance URL (required when `search_engine` is `searxng`) |
+| `mode` | `none` | Last-selected chain-of-thought mode *(app-managed)* |
+| `work_dir` | *(empty)* | Last-selected file-tools directory; restored on launch if it still exists *(app-managed)* |
+| `disabled_tools` | `[]` | Global default tools to start new sessions with disabled *(app-managed)* |
 
 The Ollama endpoint can also be overridden with the `OLLAMA_HOST` environment
 variable, which takes precedence over `config.json`.
+
+The keys above the divider are read-only, hand-edited settings. The three
+*app-managed* keys are written back automatically whenever you change the
+corresponding control in the ⚙ settings lightbox (model, mode, directory, and
+tool toggles), so your selections persist across restarts. Editing them by hand
+also works; the app preserves any other keys in the file untouched when it
+writes. Tool toggles are still per-session — the lightbox edits the current
+session — but each change also updates `disabled_tools`, the default new
+sessions inherit.
 
 #### Semantic search: the embedding model and ONNX Runtime
 

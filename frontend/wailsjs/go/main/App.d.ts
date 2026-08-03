@@ -35,6 +35,8 @@ export function GetMessages(arg1:string):Promise<Array<store.StoredMessage>>;
 
 export function GetModel():Promise<string>;
 
+export function ModelContextLength(arg1:string):Promise<number>;
+
 export function GetPlan(arg1:string):Promise<Array<store.PlanStep>>;
 
 export function GetSessionToolStates(arg1:string):Promise<Array<main.ToolState>>;

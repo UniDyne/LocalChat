@@ -62,6 +62,10 @@ export function GetModel() {
   return window['go']['main']['App']['GetModel']();
 }
 
+export function ModelContextLength(arg1) {
+  return window['go']['main']['App']['ModelContextLength'](arg1);
+}
+
 export function GetPlan(arg1) {
   return window['go']['main']['App']['GetPlan'](arg1);
 }

@@ -1,4 +1,4 @@
-import { ListModels, SendChat, GetModel, SetModel } from '../wailsjs/go/main/App';
+import { ListModels, SendChat, GetModel, SetModel, ModelContextLength } from '../wailsjs/go/main/App';
 import { ListCotModes, GetCotMode, SetCotMode } from '../wailsjs/go/main/App';
 import { CreateSession, GetCurrentSession, GetSessions, SwitchSession, DeleteSession, RenameSession, GetMessages } from '../wailsjs/go/main/App';
 import { GetArtifacts, GetArtifactContent, CreateArtifactManual, SaveArtifact, ImportArtifact } from '../wailsjs/go/main/App';
@@ -30,6 +30,20 @@ export async function getModel() {
  */
 export async function setModel(name) {
     await SetModel(name);
+}
+
+/**
+ * Return a model's trained maximum context length in tokens (0 if unknown).
+ * An empty name means the currently selected model. Never throws — resolves to
+ * 0 when Ollama can't report it, so the caller can just hide the indicator.
+ */
+export async function getModelContextLength(name = '') {
+    try {
+        return await ModelContextLength(name);
+    } catch (err) {
+        console.warn('Could not read model context length:', err.message);
+        return 0;
+    }
 }
 
 /**
