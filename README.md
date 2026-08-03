@@ -119,10 +119,16 @@ an attempt to emulate the thinking modes of Claude.
     substantial content (documents, code, notes) outside the chat log,
     browsable in the artifacts sidebar. You can also import a local file as an
     artifact via the **Import** button in the Artifacts sidebar.
-  - `search_skills` / `load_skill` / `create_skill` / `update_skill`: a
-    lightweight skill system: markdown files under `conf/skills/` the model
+  - `search_skills` / `load_skill` / `read_skill_file` / `create_skill` /
+    `update_skill`: a lightweight skill system under `conf/skills/` the model
     can discover by name/description, load on demand, and write new ones to
-    when it works out something worth remembering for next time.
+    when it works out something worth remembering for next time. A skill is
+    either a plain `foo.md` file or a **rich** skill — a `foo/` directory with
+    a `SKILL.md` entry point (same `name`/`description` frontmatter) that can
+    bundle extra files; `load_skill` lists those files and `read_skill_file`
+    fetches them on demand. `create_skill`/`update_skill` author both shapes:
+    pass bundled `files` (inline content) and/or `artifact_files` (an existing
+    artifact's content, by id) to write — or promote to — a rich skill.
   - `search_memory`: search your own material — Markdown notes you've indexed,
     earlier conversations, and saved artifacts. See **Memory** below.
   - `web_search`: query DuckDuckGo and get back ranked title/URL/snippet
@@ -182,7 +188,7 @@ LocalChat/
 ├── tools_files.go         # list_files / read_file / write_file / update_file
 ├── tools_memory.go        # search_memory
 ├── tools_plan.go          # manage_plan
-├── tools_skills.go        # search_skills / load_skill / create_skill / update_skill
+├── tools_skills.go        # search_skills / load_skill / read_skill_file / create_skill / update_skill
 ├── artifacts.go           # artifact RPC methods (including import)
 ├── skills.go              # skill RPC wrappers
 ├── store/                 # DuckDB-backed session/message/artifact/plan/tool store
@@ -191,7 +197,7 @@ LocalChat/
 ├── conf/
 │   ├── SYSTEM.md          # base system prompt
 │   ├── cot/*.md           # one file per custom CoT mode
-│   └── skills/*.md        # skills the model has created/discovered
+│   └── skills/            # skills: plain *.md files, or rich foo/SKILL.md bundles
 └── frontend/
     ├── index.html         # UI shell
     └── src/

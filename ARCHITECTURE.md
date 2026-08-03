@@ -28,7 +28,7 @@ LocalChat/
 ├── tools.go                 # ToolDef type, availableTools(), toolRegistry(), dispatch
 ├── tools_plan.go            # manage_plan
 ├── tools_artifacts.go       # create_artifact / list_artifacts / get_artifact
-├── tools_skills.go          # search_skills / load_skill / create_skill / update_skill
+├── tools_skills.go          # search_skills / load_skill / read_skill_file / create_skill / update_skill
 ├── tools_files.go           # list_files / read_file / write_file / update_file (dir-gated)
 ├── tools_memory.go          # search_memory (corpus-gated)
 ├── tools_search.go          # web_search (DDG scraper) and web_fetch (Readability pipeline)
@@ -36,13 +36,13 @@ LocalChat/
 ├── store/store.go           # DuckDB schema + queries (sessions, messages, artifacts,
 │                            #   plan_steps, session_tool_disabled)
 ├── memory/                  # semantic memory subsystem (BM25, vector embeddings, entity graph)
-├── skill/skill.go           # skill file discovery — frontmatter parsing, create/update/load
+├── skill/skill.go           # skill discovery — plain *.md and rich foo/SKILL.md bundles; frontmatter, CRUD, bundled-file reads
 ├── go.mod / go.sum          # Go module dependencies
 ├── wails.json               # Wails config (build commands, metadata)
 ├── conf/
 │   ├── SYSTEM.md            # base system prompt, prepended to every turn
 │   ├── cot/*.md             # one file per custom chain-of-thought mode (optional frontmatter: max_tokens)
-│   └── skills/*.md          # skill files (frontmatter: name, description) the model can load/write
+│   └── skills/              # skills: plain *.md files, or rich foo/SKILL.md bundles (name, description frontmatter)
 ├── build/                   # platform-specific packaging assets (icons, etc.)
 └── frontend/
     ├── index.html            # UI shell — full DOM structure, no templating
@@ -236,7 +236,19 @@ RPC pair (`GetSessionToolStates`, `SetSessionToolEnabled`).
 `store` wraps all DuckDB access behind typed methods. `skill` discovers,
 loads, and writes skill files under `conf/skills/` by parsing a small
 hand-rolled frontmatter format (name/description) — deliberately not a full
-YAML parser, since skill files only need flat single-line string fields.
+YAML parser, since skill files only need flat single-line string fields. A
+skill is either a plain `foo.md` file or a **rich** skill: a `foo/` directory
+whose `SKILL.md` is the entry point and which may bundle sibling files. The
+model loads the entry point with `load_skill` (which lists any bundled files)
+and pulls individual bundled files in on demand with `read_skill_file`;
+`skill.LoadFile` confines reads to the skill's own directory (rejecting `..`,
+absolute paths, and symlinks that escape it). `create_skill`/`update_skill`
+author both shapes: passing a `{path: content}` `files` map (and/or an
+`{path: artifact-id}` `artifact_files` map, whose content is pulled from the
+session's stored artifacts) writes a rich bundle — and promotes a plain skill
+to a rich one in place — with the same path confinement applied to writes.
+Artifact resolution lives in the tool layer (`collectSkillFiles`), so the
+`skill` package stays storage-agnostic and only ever sees resolved content.
 
 ## Web Search and Fetch — `tools_search.go`
 

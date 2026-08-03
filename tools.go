@@ -24,6 +24,7 @@ func (a *App) availableTools() []ToolDef {
 	tools := []ToolDef{
 		a.searchSkillsTool(),
 		a.loadSkillTool(),
+		a.readSkillFileTool(),
 		a.createSkillTool(),
 		a.updateSkillTool(),
 		a.createArtifactTool(),
