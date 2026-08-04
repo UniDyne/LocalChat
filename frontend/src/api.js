@@ -3,6 +3,7 @@ import { ListCotModes, GetCotMode, SetCotMode } from '../wailsjs/go/main/App';
 import { CreateSession, GetCurrentSession, GetSessions, SwitchSession, DeleteSession, RenameSession, GetMessages } from '../wailsjs/go/main/App';
 import { GetArtifacts, GetArtifactContent, CreateArtifactManual, SaveArtifact, ImportArtifact } from '../wailsjs/go/main/App';
 import { GetSessionToolStates, SetSessionToolEnabled } from '../wailsjs/go/main/App';
+import { GetSessionGenOptions, SetSessionGenOptions } from '../wailsjs/go/main/App';
 import { SetMessagePinned } from '../wailsjs/go/main/App';
 import { SelectDirectory, ClearDirectory, GetWorkDir } from '../wailsjs/go/main/App';
 import { GetPlan } from '../wailsjs/go/main/App';
@@ -270,6 +271,25 @@ export async function getSessionToolStates(sessionId) {
  */
 export async function setSessionToolEnabled(sessionId, toolName, enabled) {
     await SetSessionToolEnabled(sessionId, toolName, enabled);
+}
+
+/**
+ * Return the persisted generation options for a session.
+ * Fields are undefined/null when not set (model defaults apply).
+ * @param {string} sessionId
+ */
+export async function getSessionGenOptions(sessionId) {
+    return await GetSessionGenOptions(sessionId);
+}
+
+/**
+ * Persist generation options for a session and update the global default.
+ * Pass null/undefined fields to unset an option (revert to model default).
+ * @param {string} sessionId
+ * @param {Object} opts
+ */
+export async function setSessionGenOptions(sessionId, opts) {
+    await SetSessionGenOptions(sessionId, opts);
 }
 
 // --- Memory ---

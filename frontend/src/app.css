@@ -308,3 +308,12 @@
   .tools-panel-item input[type=checkbox]{accent-color:var(--accent);cursor:pointer;flex-shrink:0}
   .tools-panel-item span{overflow-wrap:anywhere}
   .tools-panel-empty{padding:8px 12px;font-size:11px;color:var(--text-muted)}
+
+  /* Generation options grid */
+  .gen-opt-row{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:6px;padding:3px 12px}
+  .gen-opt-label{font-size:11px;color:var(--text-primary);cursor:help;white-space:nowrap}
+  .gen-opt-input{width:90px;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);padding:3px 6px;font-size:11px;border-radius:var(--radius);text-align:right;appearance:textfield}
+  .gen-opt-input:focus{outline:none;border-color:var(--accent)}
+  .gen-opt-input::-webkit-inner-spin-button,.gen-opt-input::-webkit-outer-spin-button{-webkit-appearance:none}
+  .gen-opt-clear{background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;border-radius:var(--radius)}
+  .gen-opt-clear:hover{color:var(--text-primary)}

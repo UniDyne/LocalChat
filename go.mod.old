@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	codeberg.org/readeck/go-readability/v2 v2.1.2
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
-	github.com/duckdb/duckdb-go/v2 v2.5.6
+	github.com/duckdb/duckdb-go/v2 v2.4.3
 	github.com/google/uuid v1.6.0
 	github.com/ollama/ollama v0.30.10
 	github.com/sugarme/tokenizer v0.3.0
@@ -22,12 +22,14 @@ require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
-	github.com/duckdb/duckdb-go-bindings v0.3.5 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/darwin-amd64 v0.3.5 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/darwin-arm64 v0.3.5 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/linux-amd64 v0.3.5 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/linux-arm64 v0.3.5 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/windows-amd64 v0.3.5 // indirect
+	github.com/duckdb/duckdb-go-bindings v0.1.21 // indirect
+	github.com/duckdb/duckdb-go-bindings/darwin-amd64 v0.1.21 // indirect
+	github.com/duckdb/duckdb-go-bindings/darwin-arm64 v0.1.21 // indirect
+	github.com/duckdb/duckdb-go-bindings/linux-amd64 v0.1.21 // indirect
+	github.com/duckdb/duckdb-go-bindings/linux-arm64 v0.1.21 // indirect
+	github.com/duckdb/duckdb-go-bindings/windows-amd64 v0.1.21 // indirect
+	github.com/duckdb/duckdb-go/arrowmapping v0.0.22 // indirect
+	github.com/duckdb/duckdb-go/mapping v0.0.22 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c // indirect
@@ -56,6 +58,7 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	github.com/samber/lo v1.49.1 // indirect
 	github.com/schollz/progressbar/v2 v2.15.0 // indirect
 	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
@@ -77,3 +80,18 @@ require (
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// replace github.com/wailsapp/wails/v2 v2.12.0 => /home/config/go/pkg/mod
+
+// Pin DuckDB to the 1.4.x LTS engine.
+//
+// A `require` alone does not hold. DuckDB encodes the engine version into the module
+// version — v2.10505.0 is DuckDB 1.5.5 — so under minimal version selection the 1.5.x
+// line is *numerically greater* than the 1.4.x line (10505 > 4) and always wins. A
+// `go mod tidy` or `go get -u` therefore silently upgrades the engine, which is exactly
+// how DuckDB 1.5.5 got in unnoticed.
+//
+// 1.5.5 does not work under Wails on Linux: it installs a SIGSEGV handler without
+// SA_ONSTACK, and Go aborts with "non-Go code set up signal handler without SA_ONSTACK
+// flag" during sql.Open. TestDuckDBVersionIsPinned fails loudly if this pin is lost.
+replace github.com/duckdb/duckdb-go/v2 => github.com/duckdb/duckdb-go/v2 v2.4.3

@@ -44,6 +44,7 @@ export namespace main {
 	}
 	export class ChatTurnResult {
 	    messages: ChatTurnMessage[];
+	    promptTokens?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatTurnResult(source);
@@ -52,6 +53,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.messages = this.convertValues(source["messages"], ChatTurnMessage);
+	        this.promptTokens = source["promptTokens"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -393,6 +395,7 @@ export namespace skill {
 	    name: string;
 	    description: string;
 	    path: string;
+	    rich: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Meta(source);
@@ -403,6 +406,7 @@ export namespace skill {
 	        this.name = source["name"];
 	        this.description = source["description"];
 	        this.path = source["path"];
+	        this.rich = source["rich"];
 	    }
 	}
 
@@ -448,6 +452,28 @@ export namespace store {
 	        this.title = source["title"];
 	        this.contentType = source["contentType"];
 	        this.createdAt = source["createdAt"];
+	    }
+	}
+	export class GenOptions {
+	    num_ctx?: number;
+	    num_predict?: number;
+	    temperature?: number;
+	    top_p?: number;
+	    top_k?: number;
+	    repeat_penalty?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new GenOptions(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.num_ctx = source["num_ctx"];
+	        this.num_predict = source["num_predict"];
+	        this.temperature = source["temperature"];
+	        this.top_p = source["top_p"];
+	        this.top_k = source["top_k"];
+	        this.repeat_penalty = source["repeat_penalty"];
 	    }
 	}
 	export class MemorySource {

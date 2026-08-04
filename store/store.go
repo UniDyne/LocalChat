@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -55,6 +56,47 @@ type PlanStep struct {
 	Content   string `json:"content"`
 	Status    string `json:"status"`
 	UpdatedAt string `json:"updatedAt"`
+}
+
+// GenOptions holds per-session Ollama generation parameters. Pointer fields
+// are optional: a nil value means "don't override the model default." Only
+// non-nil fields are sent to Ollama in the Options map.
+type GenOptions struct {
+	NumCtx        *int     `json:"num_ctx,omitempty"`
+	NumPredict    *int     `json:"num_predict,omitempty"`
+	Temperature   *float64 `json:"temperature,omitempty"`
+	TopP          *float64 `json:"top_p,omitempty"`
+	TopK          *int     `json:"top_k,omitempty"`
+	RepeatPenalty *float64 `json:"repeat_penalty,omitempty"`
+}
+
+// ToMap converts set fields into the map[string]any Ollama's Options field
+// expects. Returns nil when no field is set, so callers can pass it directly
+// to chatRequestOnce without allocating an empty map.
+func (g GenOptions) ToMap() map[string]any {
+	m := map[string]any{}
+	if g.NumCtx != nil {
+		m["num_ctx"] = *g.NumCtx
+	}
+	if g.NumPredict != nil {
+		m["num_predict"] = *g.NumPredict
+	}
+	if g.Temperature != nil {
+		m["temperature"] = *g.Temperature
+	}
+	if g.TopP != nil {
+		m["top_p"] = *g.TopP
+	}
+	if g.TopK != nil {
+		m["top_k"] = *g.TopK
+	}
+	if g.RepeatPenalty != nil {
+		m["repeat_penalty"] = *g.RepeatPenalty
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 // ArtifactMeta is a lightweight artifact listing (no content) for sidebar display.
@@ -261,6 +303,10 @@ CREATE TABLE IF NOT EXISTS session_tool_disabled (
 	session_id TEXT NOT NULL,
 	tool_name  TEXT NOT NULL,
 	PRIMARY KEY (session_id, tool_name)
+);
+CREATE TABLE IF NOT EXISTS session_gen_options (
+	session_id   TEXT PRIMARY KEY,
+	options_json TEXT NOT NULL DEFAULT '{}'
 );`
 
 // Close shuts down the underlying database connection.
@@ -351,6 +397,9 @@ func (s *Store) DeleteSession(id string) error {
 	}
 	if _, err := tx.Exec("DELETE FROM session_tool_disabled WHERE session_id = ?", id); err != nil {
 		return fmt.Errorf("delete tool settings: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM session_gen_options WHERE session_id = ?", id); err != nil {
+		return fmt.Errorf("delete gen options: %w", err)
 	}
 	if _, err := tx.Exec("DELETE FROM sessions WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete session: %w", err)
@@ -636,6 +685,42 @@ func (s *Store) SetToolEnabled(sessionID, toolName string, enabled bool) error {
 	_, err := s.db.Exec(
 		"INSERT INTO session_tool_disabled (session_id, tool_name) VALUES (?, ?) ON CONFLICT DO NOTHING",
 		sessionID, toolName,
+	)
+	return err
+}
+
+// GetSessionGenOptions returns the persisted generation options for a session.
+// Returns a zero-value GenOptions (all fields nil) if none have been set.
+func (s *Store) GetSessionGenOptions(sessionID string) (GenOptions, error) {
+	var raw string
+	err := s.db.QueryRow(
+		"SELECT options_json FROM session_gen_options WHERE session_id = ?", sessionID,
+	).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return GenOptions{}, nil
+	}
+	if err != nil {
+		return GenOptions{}, fmt.Errorf("get session gen options: %w", err)
+	}
+	var opts GenOptions
+	if err := json.Unmarshal([]byte(raw), &opts); err != nil {
+		return GenOptions{}, fmt.Errorf("parse session gen options: %w", err)
+	}
+	return opts, nil
+}
+
+// SetSessionGenOptions persists generation options for a session, replacing
+// any previously stored values.
+func (s *Store) SetSessionGenOptions(sessionID string, opts GenOptions) error {
+	data, err := json.Marshal(opts)
+	if err != nil {
+		return fmt.Errorf("marshal gen options: %w", err)
+	}
+	defer s.lockWrites()()
+	_, err = s.db.Exec(
+		`INSERT INTO session_gen_options (session_id, options_json) VALUES (?, ?)
+		 ON CONFLICT (session_id) DO UPDATE SET options_json = excluded.options_json`,
+		sessionID, string(data),
 	)
 	return err
 }

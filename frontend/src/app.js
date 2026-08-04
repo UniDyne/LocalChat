@@ -9,6 +9,7 @@ import { renderPlanList } from './plan'
 import { escapeHtml, renderMarkdown, renderHighlighted, initMermaidIn } from './content'
 import { EventsOn } from '../wailsjs/runtime/runtime'
 import { renderToolsList } from './tools'
+import { renderGenOptions } from './gen_options'
 import { openToolLightbox } from './tool-views'
 
 
@@ -89,6 +90,12 @@ const ctxMeterLabel = document.getElementById('ctxMeterLabel');
 // (Ollama couldn't report it), which hides the meter entirely.
 let _contextMax = 0;
 
+// Real token count (PromptEvalCount + EvalCount) from the last completed turn,
+// as reported by Ollama. 0 until the first turn of this session completes.
+// Used as a floor so the meter reflects the actual context size rather than
+// the rough estimate alone.
+let _lastKnownTokens = 0;
+
 // Rough token estimate: ~4 characters per token is the usual English
 // approximation, with a small per-message overhead for role/formatting.
 function estimateTokens(text) {
@@ -97,6 +104,12 @@ function estimateTokens(text) {
 }
 
 function estimateContextTokens() {
+    if (_lastKnownTokens > 0) {
+        // Use the real count from the last Ollama response as a floor, and
+        // add an estimate only for whatever is currently typed in the textarea
+        // (since that hasn't been sent yet).
+        return _lastKnownTokens + estimateTokens(textarea?.value);
+    }
     let tokens = 0;
     for (const m of computeHistory()) {
         // +8 tokens/message for the role marker and chat-template scaffolding.
@@ -142,6 +155,7 @@ function formatTokenCount(n) {
 cogBtn?.addEventListener('click', () => {
     if (!settingsOverlay) return;
     settingsOverlay.style.display = '';
+    renderGenOptions();
     renderToolsList();
 });
 
@@ -162,6 +176,7 @@ function formatMessageTime(time) {
 export function resetMessages() {
     timeline = [];
     renderedSeqs = new Set();
+    _lastKnownTokens = 0;
     updateContextMeter(); // switching to/clearing a session empties the context
 }
 
@@ -405,6 +420,11 @@ async function sendAndRender(text, { auto = false, displayText = '' } = {}) {
         const result = await sendMessage(text, priorHistory, queuedByTool, displayText);
         const msgs = result?.messages || [];
 
+        if (result?.promptTokens > 0) {
+            _lastKnownTokens = result.promptTokens;
+            updateContextMeter();
+        }
+
         if (turnSessionId === getActiveSessionId()) {
             // Each of these has very likely already been rendered live via the
             // "chat:message" event as the backend produced it — renderIncomingMessage
@@ -490,6 +510,13 @@ let planRunning = false;
 // banner can offer Resume instead of just Stop.
 let planPaused = false;
 let planConsecutiveFailures = 0;
+// Tool results accumulated across all steps of the current plan run. Each
+// entry is a ChatTurnMessage with role 'tool'. These are excluded from pinned
+// history but injected back into each subsequent step's prompt so the model
+// retains everything it looked up in earlier steps (file reads, search
+// results, etc.) rather than starting each step with amnesia. Cleared when
+// the plan stops or completes.
+let planToolContext = [];
 // Consecutive auto-advanced turns where the model replied without calling
 // manage_plan at all — separate from planConsecutiveFailures (an explicit
 // "failed" status IS the model engaging with the tool, just reporting it
@@ -533,14 +560,29 @@ function pickCurrentStep(steps) {
 }
 
 // Builds the prompt for an auto-advanced turn: the live plan state plus which
-// step to work on. Only ever sent on plan-driven turns, never on a message
-// the user typed themselves — see sendAndRender's `auto` flag.
+// step to work on, with any tool results accumulated from earlier steps
+// appended so the model retains that context. Only ever sent on plan-driven
+// turns, never on a message the user typed themselves — see sendAndRender's
+// `auto` flag.
 function planPromptFor(steps, current) {
     const lines = steps
         .map(s => `${s.seq}. [${s.status}] ${s.content}${s.seq === current.seq ? '  ← you are here' : ''}`)
         .join('\n');
-    return `Here is the current plan:\n${lines}\n\nContinue working on step ${current.seq}: "${current.content}". ` +
+    let prompt = `Here is the current plan:\n${lines}\n\nContinue working on step ${current.seq}: "${current.content}". ` +
         `Call manage_plan (with the full plan) to mark it completed or failed before moving on — don't skip ahead to later steps in this same reply.`;
+    if (planToolContext.length > 0) {
+        const MAX_RESULT_CHARS = 2000;
+        const sections = planToolContext.map(tc => {
+            const args = tc.toolArgs ? ` ${tc.toolArgs}` : '';
+            let result = tc.toolResult || '';
+            if (result.length > MAX_RESULT_CHARS) {
+                result = result.slice(0, MAX_RESULT_CHARS) + `\n[…truncated]`;
+            }
+            return `[${tc.toolName}]${args}:\n${result}`;
+        });
+        prompt += `\n\n**Context gathered in previous steps:**\n${sections.join('\n\n')}`;
+    }
+    return prompt;
 }
 
 // Short human-facing label for a plan step — used both for the plan banner
@@ -560,6 +602,11 @@ function advancePlan(msgs) {
     // plain prose ("OK, I'll work on step 2...") instead of actually acting —
     // that's the specific failure mode this whole branch exists to catch.
     const wasAutoStep = msgs.some(m => m.role === 'user' && m.toolName === 'manage_plan');
+
+    // Accumulate non-plan tool results from this turn so later steps retain
+    // context gathered here (file reads, searches, etc.).
+    const newToolCalls = msgs.filter(m => m.role === 'tool' && m.toolName !== 'manage_plan');
+    if (newToolCalls.length) planToolContext.push(...newToolCalls);
 
     if (!call) {
         if (!wasAutoStep) return; // an ordinary turn — nothing plan-related happened
@@ -590,6 +637,7 @@ function advancePlan(msgs) {
             planRunning = false;
             planPaused = false;
             pendingPlanStep = null;
+            planToolContext = [];
             updatePlanBanner();
             return;
         }
@@ -624,6 +672,7 @@ export function stopPlanRun() {
     planConsecutiveFailures = 0;
     planNoToolCallCount = 0;
     pendingPlanStep = null;
+    planToolContext = [];
     // Stop can't actually cancel an in-flight backend request (no cancellation
     // channel exists yet) — it only prevents further auto-continuation.
     // Clearing this at least dismisses the banner rather than leaving it

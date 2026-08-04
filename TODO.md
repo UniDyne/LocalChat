@@ -5,7 +5,7 @@
 - [x] Timer should not appear in status bar when condition is "Ready". It should only appear when waiting.
 - [x] Add mermaid support to Markdown display
 - [x] BUG: Time displayed at the top of messages is the current time, not the timestamp of the message.
-
+- [x] Improve context size indicator. Is there anything returned from Ollama that can yield a more accurate number? The current one appears to be grossly inaccurate.
 
 
 ## Features
@@ -16,6 +16,7 @@
 - [x] Move config file into config directory.
 - [x] Support for tool that queries the web using SearXNG or DuckDuckGo. See "Search Tool" section.
 - [x] Update skills to support more rich structure. See "Skills Upgrade" section.
+- [x] During a plan loop, tool calls should not be removed from the context until the end. Many of them are to pull additional info into the context.
 - [ ] Tool to allow limited shell access. See "Shell Tool" section.
 
 

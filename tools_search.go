@@ -226,8 +226,21 @@ func parseDDGLite(r io.Reader, n int) ([]SearchResult, error) {
 // Content extraction (web_fetch)
 // ---------------------------------------------------------------------------
 
-// fetchPage fetches rawURL, runs it through Readability, converts to Markdown,
-// and returns at most maxChars characters of content.
+// isTextLikeAppType reports whether an application/* content type carries text.
+func isTextLikeAppType(ct string) bool {
+	for _, sub := range []string{
+		"json", "javascript", "x-javascript", "xml", "xhtml", "ld+json", "graphql", "typescript",
+	} {
+		if strings.Contains(ct, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// fetchPage fetches rawURL and returns its content.
+// HTML responses are run through Readability and converted to Markdown.
+// Other text-like responses (JS, CSS, JSON, plain text, etc.) are returned as-is.
 func fetchPage(rawURL string, maxChars int) (FetchResult, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -253,10 +266,12 @@ func fetchPage(rawURL string, maxChars int) (FetchResult, error) {
 		return FetchResult{}, fmt.Errorf("HTTP %d from %s", resp.StatusCode, rawURL)
 	}
 
-	// Reject non-HTML content types (PDFs, images, etc.) early.
 	ct := resp.Header.Get("Content-Type")
-	if ct != "" && !strings.Contains(ct, "html") && !strings.Contains(ct, "xml") {
-		return FetchResult{}, fmt.Errorf("unsupported content type %q — only HTML pages are supported", ct)
+	isHTML := ct == "" || strings.Contains(ct, "html")
+	isText := isHTML || strings.HasPrefix(ct, "text/") || (strings.HasPrefix(ct, "application/") && isTextLikeAppType(ct))
+
+	if !isText {
+		return FetchResult{}, fmt.Errorf("unsupported content type %q — only HTML and text resources are supported", ct)
 	}
 
 	// Read body with a 5 MB cap to avoid memory issues on huge pages.
@@ -265,7 +280,17 @@ func fetchPage(rawURL string, maxChars int) (FetchResult, error) {
 		return FetchResult{}, fmt.Errorf("read response: %w", err)
 	}
 
-	// Run Readability on the raw HTML.
+	if !isHTML {
+		// Non-HTML text (JS, CSS, JSON, plain text, etc.): return as-is.
+		content := strings.TrimSpace(string(bodyBytes))
+		if maxChars > 0 && len([]rune(content)) > maxChars {
+			runes := []rune(content)
+			content = string(runes[:maxChars]) + "\n\n[… truncated]"
+		}
+		return FetchResult{URL: rawURL, Content: content}, nil
+	}
+
+	// HTML path: Readability + Markdown conversion.
 	parser := readability.NewParser()
 	article, err := parser.Parse(bytes.NewReader(bodyBytes), parsed)
 	if err != nil {
@@ -466,7 +491,7 @@ func (a *App) webSearchTool() ToolDef {
 func (a *App) webFetchTool() ToolDef {
 	return ToolDef{
 		Name:        "web_fetch",
-		Description: "Fetch the content of a URL and return it as clean Markdown. Use this after web_search to read the full content of a result, or when given a specific URL to retrieve.",
+		Description: "Fetch the content of a URL. HTML pages are returned as clean Markdown; other text resources (JavaScript, CSS, JSON, plain text, etc.) are returned as-is. Use this to read a web page in full, or to download a code or data file from a URL.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {

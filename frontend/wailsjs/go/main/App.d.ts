@@ -35,9 +35,9 @@ export function GetMessages(arg1:string):Promise<Array<store.StoredMessage>>;
 
 export function GetModel():Promise<string>;
 
-export function ModelContextLength(arg1:string):Promise<number>;
-
 export function GetPlan(arg1:string):Promise<Array<store.PlanStep>>;
+
+export function GetSessionGenOptions(arg1:string):Promise<store.GenOptions>;
 
 export function GetSessionToolStates(arg1:string):Promise<Array<main.ToolState>>;
 
@@ -64,6 +64,8 @@ export function MemoryReady():Promise<boolean>;
 export function MemorySources():Promise<Array<store.MemorySource>>;
 
 export function MemoryStatus():Promise<memory.Status>;
+
+export function ModelContextLength(arg1:string):Promise<number>;
 
 export function ProvisionMemoryModel():Promise<boolean>;
 
@@ -92,6 +94,8 @@ export function SetCotMode(arg1:string):Promise<void>;
 export function SetMessagePinned(arg1:string,arg2:number,arg3:boolean):Promise<void>;
 
 export function SetModel(arg1:string):Promise<void>;
+
+export function SetSessionGenOptions(arg1:string,arg2:store.GenOptions):Promise<void>;
 
 export function SetSessionToolEnabled(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 

@@ -60,6 +60,9 @@ type config struct {
 	// with disabled. Per-session toggles still override this for a given
 	// session (see GetSessionToolStates / seedSessionTools).
 	DisabledTools []string `json:"disabled_tools"`
+	// GenOptions is the global default generation parameters for new sessions.
+	// Per-session overrides stored in session_gen_options take precedence.
+	GenOptions store.GenOptions `json:"gen_options,omitempty"`
 }
 
 // resolveConfigPath returns the config.json path to read from and write back
@@ -145,6 +148,7 @@ func (a *App) persistConfig() {
 	m["mode"] = a.mode
 	m["work_dir"] = a.workDirSnapshot()
 	m["disabled_tools"] = tools
+	m["gen_options"] = a.genOptions
 
 	out, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -197,6 +201,20 @@ func (a *App) seedSessionTools(sessionID string) {
 		if err := a.sess.SetToolEnabled(sessionID, name, false); err != nil {
 			slog.Warn("failed to seed session tool default", "session", sessionID, "tool", name, "error", err)
 		}
+	}
+}
+
+// seedSessionGenOptions applies the global default generation options to a
+// freshly created session. Per-session changes made later override this row.
+func (a *App) seedSessionGenOptions(sessionID string) {
+	a.configMu.Lock()
+	opts := a.genOptions
+	a.configMu.Unlock()
+	if opts == (store.GenOptions{}) {
+		return // nothing to seed
+	}
+	if err := a.sess.SetSessionGenOptions(sessionID, opts); err != nil {
+		slog.Warn("failed to seed session gen options", "session", sessionID, "error", err)
 	}
 }
 
@@ -305,6 +323,9 @@ type App struct {
 	// disabledTools is the global default disabled-tools set (config.json's
 	// disabled_tools), used to seed new sessions. Guarded by configMu.
 	disabledTools []string
+	// genOptions is the global default generation options (config.json's
+	// gen_options), used to seed new sessions. Guarded by configMu.
+	genOptions store.GenOptions
 }
 
 // NewApp creates a new App with defaults.
@@ -332,6 +353,7 @@ func NewApp() *App {
 		extractModel: cfg.ExtractModel, dbPath: cfg.DBPath,
 		searchEngine: cfg.SearchEngine, searxngEndpoint: cfg.SearxngEndpoint,
 		workDir: workDir, disabledTools: cfg.DisabledTools,
+		genOptions: cfg.GenOptions,
 		configPath: resolveConfigPath(),
 	}
 }
@@ -1291,7 +1313,8 @@ type ChatTurnMessage struct {
 // ChatTurnResult is everything SendChat persisted for one turn, in
 // conversation order (user, optional cot note, optional tool calls, assistant).
 type ChatTurnResult struct {
-	Messages []ChatTurnMessage `json:"messages"`
+	Messages     []ChatTurnMessage `json:"messages"`
+	PromptTokens int               `json:"promptTokens,omitempty"`
 }
 
 // SendChat sends the user message to Ollama with optional history and returns
@@ -1444,7 +1467,7 @@ func (a *App) SendChat(userMsg string, history []ChatMessage, queuedByTool strin
 	}
 
 	think := api.ThinkValue{Value: mode == CotModeBuiltIn}
-	fullReply, toolTurnMsgs, err := a.chatWithTools(sessionID, msgs, think, mode)
+	fullReply, toolTurnMsgs, promptTokens, err := a.chatWithTools(sessionID, msgs, think, mode)
 	turnMsgs = append(turnMsgs, toolTurnMsgs...)
 	if err != nil {
 		// Everything up to the failure (user message, cot note, dispatched tool
@@ -1456,7 +1479,7 @@ func (a *App) SendChat(userMsg string, history []ChatMessage, queuedByTool strin
 
 	a.enqueueTurnMemory(sessionID)
 
-	return ChatTurnResult{Messages: turnMsgs}, nil
+	return ChatTurnResult{Messages: turnMsgs, PromptTokens: promptTokens}, nil
 }
 
 // enqueueTurnMemory queues this session's turns for ingestion into memory.
@@ -1512,14 +1535,15 @@ func titleFromMessage(msg string, maxLen int) string {
 // evaluation pass, which is a throwaway internal note that shouldn't be able
 // to trigger skill/artifact tool calls.
 func (a *App) chatOnce(msgs []api.Message, think api.ThinkValue, options map[string]any) (string, error) {
-	resp, err := a.chatRequestOnce(msgs, think, nil, options)
+	resp, _, err := a.chatRequestOnce(msgs, think, nil, options)
 	return resp.Content, err
 }
 
 // chatRequestOnce issues a single non-streaming chat completion request,
 // optionally with a tool registry attached, and returns the full response
-// message (content plus any requested tool calls).
-func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools api.Tools, options map[string]any) (api.Message, error) {
+// message (content plus any requested tool calls) and the total token count
+// (prompt + generated) reported by Ollama on the final chunk.
+func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools api.Tools, options map[string]any) (api.Message, int, error) {
 	stream := false
 	req := &api.ChatRequest{
 		Model:    a.model,
@@ -1531,6 +1555,7 @@ func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools ap
 	}
 
 	var full api.Message
+	var totalTokens int
 	var mu sync.Mutex
 	err := a.cli.Chat(a.ctx, req, func(resp api.ChatResponse) error {
 		mu.Lock()
@@ -1540,9 +1565,12 @@ func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools ap
 		if len(resp.Message.ToolCalls) > 0 {
 			full.ToolCalls = append(full.ToolCalls, resp.Message.ToolCalls...)
 		}
+		if resp.PromptEvalCount > 0 {
+			totalTokens = resp.PromptEvalCount + resp.EvalCount
+		}
 		return nil
 	})
-	return full, err
+	return full, totalTokens, err
 }
 
 // chatWithTools runs the tool-calling loop for a chat turn: send the request
@@ -1564,8 +1592,13 @@ func (a *App) chatRequestOnce(msgs []api.Message, think api.ThinkValue, tools ap
 // and attempt later steps itself before the turn ends. Ending the turn right
 // there removes that possibility structurally rather than relying on the
 // model to respect the tool description's wording.
-func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.ThinkValue, mode string) (string, []ChatTurnMessage, error) {
+func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.ThinkValue, mode string) (string, []ChatTurnMessage, int, error) {
 	tools := toAPITools(a.toolRegistry())
+	genOpts, err := a.sess.GetSessionGenOptions(sessionID)
+	if err != nil {
+		slog.Warn("failed to get session gen options", "session", sessionID, "error", err)
+	}
+	options := genOpts.ToMap() // nil when no options set — chatRequestOnce treats nil as "use model defaults"
 	var turnMsgs []ChatTurnMessage
 
 	// lastNarration is the most recent non-empty resp.Content seen across any
@@ -1578,20 +1611,24 @@ func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.Thin
 	// to the tool's mechanical echo instead, which is the "regurgitation"
 	// behavior this is meant to avoid.
 	lastNarration := ""
+	var lastTokens int
 
 	for {
-		resp, err := a.chatRequestOnce(msgs, think, tools, nil)
+		resp, tokens, err := a.chatRequestOnce(msgs, think, tools, options)
+		if tokens > 0 {
+			lastTokens = tokens
+		}
 		if err != nil {
-			return "", turnMsgs, err
+			return "", turnMsgs, lastTokens, err
 		}
 		if resp.Content != "" {
 			lastNarration = resp.Content
 		}
 		if len(resp.ToolCalls) == 0 {
 			if resp.Content == "" {
-				return lastNarration, turnMsgs, nil
+				return lastNarration, turnMsgs, lastTokens, nil
 			}
-			return resp.Content, turnMsgs, nil
+			return resp.Content, turnMsgs, lastTokens, nil
 		}
 
 		msgs = append(msgs, resp)
@@ -1642,7 +1679,7 @@ func (a *App) chatWithTools(sessionID string, msgs []api.Message, think api.Thin
 			if reply == "" {
 				reply = planEcho
 			}
-			return reply, turnMsgs, nil
+			return reply, turnMsgs, lastTokens, nil
 		}
 	}
 }
@@ -1673,7 +1710,8 @@ func (a *App) persist(sessionID string, msg store.NewMessage) ChatTurnMessage {
 // CreateSession starts a new chat session and returns its ID.
 func (a *App) CreateSession() string {
 	id, _ := a.sess.CreateSession("New Chat")
-	a.seedSessionTools(id) // start from the global default disabled-tools set
+	a.seedSessionTools(id)      // start from the global default disabled-tools set
+	a.seedSessionGenOptions(id) // start from the global default gen options
 	slog.Info("created session", "id", id)
 	return id
 }
@@ -1774,5 +1812,24 @@ func (a *App) SetSessionToolEnabled(sessionID, toolName string, enabled bool) er
 		return err
 	}
 	a.setGlobalToolDefault(toolName, enabled)
+	return nil
+}
+
+// GetSessionGenOptions returns the persisted generation options for the given
+// session. All fields are nil when no options have been set (model defaults apply).
+func (a *App) GetSessionGenOptions(sessionID string) (store.GenOptions, error) {
+	return a.sess.GetSessionGenOptions(sessionID)
+}
+
+// SetSessionGenOptions persists generation options for the given session and
+// updates the global default so new sessions and config.json inherit the change.
+func (a *App) SetSessionGenOptions(sessionID string, opts store.GenOptions) error {
+	if err := a.sess.SetSessionGenOptions(sessionID, opts); err != nil {
+		return err
+	}
+	a.configMu.Lock()
+	a.genOptions = opts
+	a.configMu.Unlock()
+	a.persistConfig()
 	return nil
 }

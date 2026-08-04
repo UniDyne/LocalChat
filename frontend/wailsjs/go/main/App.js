@@ -62,12 +62,12 @@ export function GetModel() {
   return window['go']['main']['App']['GetModel']();
 }
 
-export function ModelContextLength(arg1) {
-  return window['go']['main']['App']['ModelContextLength'](arg1);
-}
-
 export function GetPlan(arg1) {
   return window['go']['main']['App']['GetPlan'](arg1);
+}
+
+export function GetSessionGenOptions(arg1) {
+  return window['go']['main']['App']['GetSessionGenOptions'](arg1);
 }
 
 export function GetSessionToolStates(arg1) {
@@ -120,6 +120,10 @@ export function MemorySources() {
 
 export function MemoryStatus() {
   return window['go']['main']['App']['MemoryStatus']();
+}
+
+export function ModelContextLength(arg1) {
+  return window['go']['main']['App']['ModelContextLength'](arg1);
 }
 
 export function ProvisionMemoryModel() {
@@ -176,6 +180,10 @@ export function SetMessagePinned(arg1, arg2, arg3) {
 
 export function SetModel(arg1) {
   return window['go']['main']['App']['SetModel'](arg1);
+}
+
+export function SetSessionGenOptions(arg1, arg2) {
+  return window['go']['main']['App']['SetSessionGenOptions'](arg1, arg2);
 }
 
 export function SetSessionToolEnabled(arg1, arg2, arg3) {
